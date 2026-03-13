@@ -68,7 +68,7 @@
 - 当前仓库实际包根保持 `com.jhun.backend`
 - 当前启动类保持 `DeviceManagementBackendApplication`
 - 当前 `pom.xml` 仍是 Spring Boot `4.0.3` 最小初始化骨架
-- 目标工程基线仍按外部设计资料对齐到 Spring Boot `3.x`、Spring Security `6.x`、MyBatis-Plus、MySQL、Redis、JWT、Spring AI
+- 目标工程基线调整为对齐当前仓库已采用的 Spring Boot `4.x`、Spring Security `6.x`、MyBatis-Plus、MySQL、Redis、JWT、Spring AI
 - 后续实施默认**不迁移包根**，而是在 `com.jhun.backend` 下落地目标目录结构
 
 ### 3.2 数据与模型基线
