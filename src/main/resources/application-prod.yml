@@ -6,9 +6,15 @@ spring:
       ssl:
         enabled: true
   mail:
+    # 生产环境必须配置真实 SMTP，找回密码验证码通过该通道送达最终用户。
+    host: ${MAIL_HOST}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME}
+    password: ${MAIL_PASSWORD}
     properties:
       mail:
         smtp:
+          auth: true
           starttls:
             enable: true
             required: true

@@ -168,10 +168,16 @@ public class AuthServiceImpl implements AuthService {
          * 重置接口对匿名用户开放，因此验证码不能只存在服务端内存而不经通道下发。
          * 这里先统一走邮件发送抽象，后续接入真实 SMTP 时无需改动认证主链路。
          */
-        emailSender.send(
-                request.email(),
-                "智能设备管理系统密码重置验证码",
-                "您的验证码为：" + verificationCode + "，" + RESET_CODE_EXPIRE_MINUTES + " 分钟内有效。");
+        try {
+            emailSender.send(
+                    request.email(),
+                    "智能设备管理系统密码重置验证码",
+                    "您的验证码为：" + verificationCode + "，" + RESET_CODE_EXPIRE_MINUTES + " 分钟内有效。");
+        }
+        catch (RuntimeException exception) {
+            verificationCodeStates.remove(request.email());
+            throw new BusinessException("验证码发送失败，请稍后重试");
+        }
     }
 
     @Override

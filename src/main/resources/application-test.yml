@@ -10,6 +10,7 @@ spring:
       port: 6379
       database: 1
   mail:
+    # 测试环境保留日志占位发送器，不要求本地 SMTP 可用，但保留字段以对齐配置骨架。
     host: localhost
     port: 2525
     username: test
