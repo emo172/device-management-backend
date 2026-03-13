@@ -1,0 +1,74 @@
+spring:
+  application:
+    name: device-management-backend
+  datasource:
+    hikari:
+      minimum-idle: 2
+      maximum-pool-size: 10
+      connection-timeout: 30000
+      validation-timeout: 5000
+  data:
+    redis:
+      timeout: 5s
+  mail:
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 20MB
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.jhun.backend.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: assign_uuid
+
+jwt:
+  issuer: device-management-backend
+  access-token-validity: 86400
+  refresh-token-validity: 604800
+  secret: device-management-backend-access-secret-key-for-local-dev
+
+reservation:
+  open-window-start: 08:00
+  open-window-end: 22:00
+  min-duration-minutes: 30
+  max-duration-days: 7
+  check-in-advance-minutes: 30
+  check-in-delay-minutes: 30
+  check-in-timeout-minutes: 60
+  borrow-confirm-timeout-hours: 2
+  manual-timeout-hours: 24
+
+overdue:
+  warning-threshold-hours: 4
+  restricted-threshold-hours: 4
+  frozen-threshold-hours: 96
+
+verification-code:
+  expire-minutes: 5
+  resend-interval-seconds: 60
+  daily-limit: 10
+
+storage:
+  upload-dir: uploads
+  public-base-url: http://localhost:8080/files
+
+ai:
+  enabled: false
+  provider: mock
+  timeout-seconds: 30
+
+app:
+  cors:
+    allowed-origins: http://localhost:3000,http://localhost:5173
