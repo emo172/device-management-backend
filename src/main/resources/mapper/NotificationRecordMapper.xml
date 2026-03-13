@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.NotificationRecordMapper">
+
+    <!--
+        查询用户通知列表。
+        当前阶段按创建时间倒序返回通知页列表，并保留多渠道记录，后续可在服务层追加分页筛选。
+    -->
+    <select id="findByUserId" resultType="com.jhun.backend.entity.NotificationRecord">
+        SELECT id,
+               user_id,
+               notification_type,
+               channel,
+               title,
+               content,
+               template_vars,
+               status,
+               retry_count,
+               error_message,
+               sent_at,
+               read_flag,
+               read_at,
+               related_id,
+               related_type,
+               created_at,
+               updated_at
+        FROM notification_record
+        WHERE user_id = #{userId}
+        ORDER BY created_at DESC
+    </select>
+
+    <!--
+        统计未读站内信数量。
+        计划明确已读能力仅对 IN_APP 渠道生效，因此这里显式只统计 channel=IN_APP 且 read_flag=0 的记录。
+    -->
+    <select id="countUnreadInAppByUserId" resultType="long">
+        SELECT COUNT(1)
+        FROM notification_record
+        WHERE user_id = #{userId}
+          AND channel = 'IN_APP'
+          AND read_flag = 0
+    </select>
+
+    <!--
+        单条站内信已读。
+        仅允许当前用户更新自己的 IN_APP 通知，避免邮件、短信渠道被错误标记为已读。
+    -->
+    <update id="markAsRead">
+        UPDATE notification_record
+        SET read_flag = 1,
+            read_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{notificationId}
+          AND user_id = #{userId}
+          AND channel = 'IN_APP'
+          AND read_flag = 0
+    </update>
+
+    <!--
+        全部站内信已读。
+        仅批量更新当前用户尚未已读的 IN_APP 记录。
+    -->
+    <update id="markAllAsRead">
+        UPDATE notification_record
+        SET read_flag = 1,
+            read_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = #{userId}
+          AND channel = 'IN_APP'
+          AND read_flag = 0
+    </update>
+</mapper>

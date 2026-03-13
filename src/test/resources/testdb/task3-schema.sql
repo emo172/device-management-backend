@@ -53,3 +53,24 @@ CREATE TABLE password_history (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_ph_user_id FOREIGN KEY (user_id) REFERENCES `user` (id)
 );
+
+CREATE TABLE notification_record (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    notification_type VARCHAR(50) NOT NULL,
+    channel VARCHAR(20) NOT NULL DEFAULT 'IN_APP',
+    title VARCHAR(200) NOT NULL,
+    content TEXT NOT NULL,
+    template_vars VARCHAR(2000),
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    retry_count INT NOT NULL DEFAULT 0,
+    error_message VARCHAR(2000),
+    sent_at TIMESTAMP,
+    read_flag TINYINT NOT NULL DEFAULT 0,
+    read_at TIMESTAMP,
+    related_id VARCHAR(36),
+    related_type VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_notification_user_id FOREIGN KEY (user_id) REFERENCES `user` (id)
+);
