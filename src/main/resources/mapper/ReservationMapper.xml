@@ -17,4 +17,74 @@
           AND start_time &lt; #{endTime}
           AND end_time &gt; #{startTime}
     </select>
+
+    <!-- 查询超过 48 小时仍待审核的预约，用于 C-01 审核超时提醒。 -->
+    <select id="findAuditPendingBefore" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL')
+          AND created_at &lt;= #{threshold}
+    </select>
+
+    <!-- 查询超过 72 小时仍待审核的预约，用于 C-02 自动过期。 -->
+    <select id="findAuditPendingForExpireBefore" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL')
+          AND created_at &lt;= #{threshold}
+    </select>
+
+    <!-- 查询签到截止时间已过但仍未签到的预约，用于 C-03 签到超时处理。 -->
+    <select id="findApprovedNotCheckedInBefore" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE status = 'APPROVED'
+          AND sign_status = 'NOT_CHECKED_IN'
+          AND start_time &lt;= #{deadline}
+    </select>
+
+    <!-- 查询已签到但超过 2 小时仍未确认借用的预约，用于 C-04 转待人工处理。 -->
+    <select id="findCheckedInBorrowConfirmTimeoutBefore" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE status = 'APPROVED'
+          AND sign_status IN ('CHECKED_IN', 'CHECKED_IN_TIMEOUT')
+          AND checked_in_at IS NOT NULL
+          AND checked_in_at &lt;= #{deadline}
+    </select>
+
+    <!-- 查询待人工处理超过 24 小时的预约，用于自动取消兜底。 -->
+    <select id="findPendingManualBefore" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE status = 'PENDING_MANUAL'
+          AND updated_at &lt;= #{deadline}
+    </select>
+
+    <!-- 查询 30 分钟内即将开始的审批通过预约，用于 C-11 预约提醒。 -->
+    <select id="findApprovedStartingBetween" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE status = 'APPROVED'
+          AND start_time &gt;= #{start}
+          AND start_time &lt;= #{end}
+    </select>
 </mapper>
