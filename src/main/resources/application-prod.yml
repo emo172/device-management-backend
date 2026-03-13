@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      ssl:
+        enabled: true
+  mail:
+    properties:
+      mail:
+        smtp:
+          starttls:
+            enable: true
+            required: true
+
+ai:
+  enabled: true
