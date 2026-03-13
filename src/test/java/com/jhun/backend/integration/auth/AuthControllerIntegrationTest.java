@@ -129,4 +129,41 @@ class AuthControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.realName").value("孙七-已更新"))
                 .andExpect(jsonPath("$.data.phone").value("13800138099"));
     }
+
+    /**
+     * 验证刷新令牌不能直接访问受保护接口，避免绕过 access token 的短时效约束。
+     */
+    @Test
+    void shouldRejectRefreshTokenWhenAccessingProtectedEndpoint() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "username": "zhoujiu",
+                                  "password": "Password123!",
+                                  "email": "zhoujiu@example.com",
+                                  "realName": "周九",
+                                  "phone": "13800138011"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "account": "zhoujiu",
+                                  "password": "Password123!"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode loginBody = objectMapper.readTree(loginResult.getResponse().getContentAsString());
+        String refreshToken = loginBody.path("data").path("refreshToken").asText();
+
+        mockMvc.perform(get("/api/auth/me")
+                        .header("Authorization", "Bearer " + refreshToken))
+                .andExpect(status().isUnauthorized());
+    }
 }
