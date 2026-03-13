@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.DeviceCategoryMapper">
+
+    <!-- 查询根分类，父分类为空时用于创建二级分类。 -->
+    <select id="findRootByName" resultType="com.jhun.backend.entity.DeviceCategory">
+        SELECT id, name, parent_id, sort_order, description, default_approval_mode, created_at, updated_at
+        FROM device_category
+        WHERE parent_id IS NULL AND name = #{name}
+        LIMIT 1
+    </select>
+
+    <!-- 查询同一父分类下的同名分类，用于保护 parent_id + name 唯一约束。 -->
+    <select id="findByParentIdAndName" resultType="com.jhun.backend.entity.DeviceCategory">
+        SELECT id, name, parent_id, sort_order, description, default_approval_mode, created_at, updated_at
+        FROM device_category
+        WHERE <choose><when test="parentId == null">parent_id IS NULL</when><otherwise>parent_id = #{parentId}</otherwise></choose>
+          AND name = #{name}
+        LIMIT 1
+    </select>
+
+    <!-- 查询全部分类并按层级排序，用于服务层组装分类树。 -->
+    <select id="findAllOrderBySort" resultType="com.jhun.backend.entity.DeviceCategory">
+        SELECT id, name, parent_id, sort_order, description, default_approval_mode, created_at, updated_at
+        FROM device_category
+        ORDER BY sort_order ASC, created_at ASC
+    </select>
+</mapper>

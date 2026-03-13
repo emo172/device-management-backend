@@ -74,3 +74,34 @@ CREATE TABLE notification_record (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_notification_user_id FOREIGN KEY (user_id) REFERENCES `user` (id)
 );
+
+CREATE TABLE device_category (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    parent_id VARCHAR(36),
+    sort_order INT NOT NULL DEFAULT 0,
+    description VARCHAR(255),
+    default_approval_mode VARCHAR(20) NOT NULL DEFAULT 'DEVICE_ONLY',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_category_parent_name UNIQUE (parent_id, name),
+    CONSTRAINT fk_category_parent_id FOREIGN KEY (parent_id) REFERENCES device_category (id)
+);
+
+CREATE TABLE device (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    device_number VARCHAR(50) NOT NULL,
+    category_id VARCHAR(36) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
+    approval_mode_override VARCHAR(20),
+    image_url VARCHAR(500),
+    description VARCHAR(2000),
+    purchase_date DATE,
+    location VARCHAR(100),
+    status_change_reason VARCHAR(500),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_device_number UNIQUE (device_number),
+    CONSTRAINT fk_device_category_id FOREIGN KEY (category_id) REFERENCES device_category (id)
+);

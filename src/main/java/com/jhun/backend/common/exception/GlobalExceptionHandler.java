@@ -1,6 +1,8 @@
 package com.jhun.backend.common.exception;
 
 import com.jhun.backend.common.response.Result;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -20,8 +22,8 @@ public class GlobalExceptionHandler {
      * @return 统一失败响应
      */
     @ExceptionHandler(BusinessException.class)
-    public Result<Void> handleBusinessException(BusinessException exception) {
-        return Result.error(exception.getMessage());
+    public ResponseEntity<Result<Void>> handleBusinessException(BusinessException exception) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.error(exception.getMessage()));
     }
 
     /**
@@ -31,7 +33,7 @@ public class GlobalExceptionHandler {
      * @return 统一失败响应
      */
     @ExceptionHandler(Exception.class)
-    public Result<Void> handleException(Exception exception) {
-        return Result.error(exception.getMessage());
+    public ResponseEntity<Result<Void>> handleException(Exception exception) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Result.error(exception.getMessage()));
     }
 }

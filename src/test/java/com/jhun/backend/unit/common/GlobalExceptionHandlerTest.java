@@ -6,6 +6,8 @@ import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.common.exception.GlobalExceptionHandler;
 import com.jhun.backend.common.response.Result;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 
 /**
  * 全局异常处理器单元测试。
@@ -19,9 +21,11 @@ class GlobalExceptionHandlerTest {
      */
     @Test
     void shouldWrapBusinessExceptionWithUnifiedBody() {
-        Result<Void> body = new GlobalExceptionHandler()
+        ResponseEntity<Result<Void>> response = new GlobalExceptionHandler()
                 .handleBusinessException(new BusinessException("user_not_found"));
 
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        Result<Void> body = response.getBody();
         assertEquals("user_not_found", body.getMessage());
     }
 }
