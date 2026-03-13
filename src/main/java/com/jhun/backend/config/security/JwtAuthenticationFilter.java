@@ -35,6 +35,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 && SecurityContextHolder.getContext().getAuthentication() == null) {
             String token = authorization.substring(7);
             Claims claims = jwtTokenProvider.parseClaims(token);
+
+            /*
+             * 访问受保护接口时只能接受 access token。
+             * refresh token 只允许出现在换发链路，若在这里放行会直接绕过短时效访问令牌的安全边界。
+             */
+            String tokenType = claims.get("tokenType", String.class);
+            if (!"access".equals(tokenType)) {
+                filterChain.doFilter(request, response);
+                return;
+            }
+
             AuthUserPrincipal principal = new AuthUserPrincipal(
                     claims.getSubject(),
                     claims.get("username", String.class),

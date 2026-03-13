@@ -17,7 +17,9 @@ import com.jhun.backend.mapper.PasswordHistoryMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.AuthService;
+import com.jhun.backend.service.support.notification.EmailSender;
 import com.jhun.backend.util.UuidUtil;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -36,14 +38,21 @@ import org.springframework.transaction.annotation.Transactional;
 public class AuthServiceImpl implements AuthService {
 
     private static final String DEFAULT_ROLE_NAME = "USER";
-    private static final String DEFAULT_RESET_CODE = "888888";
     private static final int MAX_FAILED_LOGIN_ATTEMPTS = 5;
+    private static final int RESET_CODE_EXPIRE_MINUTES = 5;
+
+    /**
+     * 密码重置验证码固定为 6 位数字，既满足前端输入体验，也避免使用可预测常量。
+     */
+    private static final int RESET_CODE_BOUND = 1_000_000;
 
     private final UserMapper userMapper;
     private final RoleMapper roleMapper;
     private final PasswordHistoryMapper passwordHistoryMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
+    private final EmailSender emailSender;
+    private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, LoginFailureState> loginFailureStates = new ConcurrentHashMap<>();
     private final Map<String, VerificationCodeState> verificationCodeStates = new ConcurrentHashMap<>();
 
@@ -52,12 +61,14 @@ public class AuthServiceImpl implements AuthService {
             RoleMapper roleMapper,
             PasswordHistoryMapper passwordHistoryMapper,
             PasswordEncoder passwordEncoder,
-            JwtTokenProvider jwtTokenProvider) {
+            JwtTokenProvider jwtTokenProvider,
+            EmailSender emailSender) {
         this.userMapper = userMapper;
         this.roleMapper = roleMapper;
         this.passwordHistoryMapper = passwordHistoryMapper;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
+        this.emailSender = emailSender;
     }
 
     @Override
@@ -66,8 +77,8 @@ public class AuthServiceImpl implements AuthService {
         if (userMapper.findByAccount(request.username()) != null) {
             throw new BusinessException("用户名已存在");
         }
-        if (userMapper.findByEmail(request.email()) != null) {
-            throw new BusinessException("邮箱已存在");
+        if (userMapper.findByAccount(request.email()) != null) {
+            throw new BusinessException("邮箱已存在或与现有用户名冲突");
         }
 
         Role defaultRole = roleMapper.findByName(DEFAULT_ROLE_NAME);
@@ -148,7 +159,25 @@ public class AuthServiceImpl implements AuthService {
         if (user == null) {
             throw new BusinessException("邮箱未注册");
         }
-        verificationCodeStates.put(request.email(), new VerificationCodeState(DEFAULT_RESET_CODE, LocalDateTime.now().plusMinutes(5)));
+        String verificationCode = generateResetCode();
+        verificationCodeStates.put(
+                request.email(),
+                new VerificationCodeState(verificationCode, LocalDateTime.now().plusMinutes(RESET_CODE_EXPIRE_MINUTES)));
+
+        /*
+         * 重置接口对匿名用户开放，因此验证码不能只存在服务端内存而不经通道下发。
+         * 这里先统一走邮件发送抽象，后续接入真实 SMTP 时无需改动认证主链路。
+         */
+        try {
+            emailSender.send(
+                    request.email(),
+                    "智能设备管理系统密码重置验证码",
+                    "您的验证码为：" + verificationCode + "，" + RESET_CODE_EXPIRE_MINUTES + " 分钟内有效。");
+        }
+        catch (RuntimeException exception) {
+            verificationCodeStates.remove(request.email());
+            throw new BusinessException("验证码发送失败，请稍后重试");
+        }
     }
 
     @Override
@@ -230,6 +259,15 @@ public class AuthServiceImpl implements AuthService {
 
     private void clearLoginFailure(String account) {
         loginFailureStates.remove(account);
+    }
+
+    /**
+     * 生成 6 位随机验证码。
+     * <p>
+     * 这里显式使用安全随机数，避免匿名重置接口退化为可枚举的固定验证码入口。
+     */
+    private String generateResetCode() {
+        return String.format("%06d", secureRandom.nextInt(RESET_CODE_BOUND));
     }
 
     /** 登录失败状态快照。 */

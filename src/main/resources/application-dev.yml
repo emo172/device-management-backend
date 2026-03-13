@@ -10,7 +10,14 @@ spring:
       port: 6379
       database: 0
   mail:
+    # 开发环境默认保留日志占位发送器，因此这里主要用于本地联调真实 SMTP 时手动覆盖。
     host: smtp.qq.com
     port: 587
     username: noreply@example.com
     password: change-me
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
