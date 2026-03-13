@@ -5,7 +5,10 @@ package com.jhun.backend.dto.reservation;
  */
 public record ReservationResponse(
         String id,
+        String batchId,
         String userId,
+        String createdBy,
+        String reservationMode,
         String deviceId,
         String status,
         String approvalModeSnapshot,

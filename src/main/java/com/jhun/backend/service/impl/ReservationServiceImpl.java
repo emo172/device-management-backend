@@ -3,15 +3,20 @@ package com.jhun.backend.service.impl;
 import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.dto.reservation.AuditReservationRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
+import com.jhun.backend.dto.reservation.ProxyReservationRequest;
 import com.jhun.backend.dto.reservation.ReservationResponse;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
 import com.jhun.backend.entity.NotificationRecord;
 import com.jhun.backend.entity.Reservation;
+import com.jhun.backend.entity.Role;
+import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.DeviceCategoryMapper;
 import com.jhun.backend.mapper.DeviceMapper;
 import com.jhun.backend.mapper.NotificationRecordMapper;
 import com.jhun.backend.mapper.ReservationMapper;
+import com.jhun.backend.mapper.RoleMapper;
+import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.ReservationService;
 import com.jhun.backend.service.support.reservation.ConflictDetector;
 import com.jhun.backend.service.support.reservation.ReservationValidator;
@@ -37,6 +42,8 @@ public class ReservationServiceImpl implements ReservationService {
     private final DeviceMapper deviceMapper;
     private final DeviceCategoryMapper deviceCategoryMapper;
     private final NotificationRecordMapper notificationRecordMapper;
+    private final UserMapper userMapper;
+    private final RoleMapper roleMapper;
     private final ReservationValidator reservationValidator;
     private final ConflictDetector conflictDetector;
     private final TransactionTemplate transactionTemplate;
@@ -47,6 +54,8 @@ public class ReservationServiceImpl implements ReservationService {
             DeviceMapper deviceMapper,
             DeviceCategoryMapper deviceCategoryMapper,
             NotificationRecordMapper notificationRecordMapper,
+            UserMapper userMapper,
+            RoleMapper roleMapper,
             ReservationValidator reservationValidator,
             ConflictDetector conflictDetector,
             TransactionTemplate transactionTemplate) {
@@ -54,6 +63,8 @@ public class ReservationServiceImpl implements ReservationService {
         this.deviceMapper = deviceMapper;
         this.deviceCategoryMapper = deviceCategoryMapper;
         this.notificationRecordMapper = notificationRecordMapper;
+        this.userMapper = userMapper;
+        this.roleMapper = roleMapper;
         this.reservationValidator = reservationValidator;
         this.conflictDetector = conflictDetector;
         this.transactionTemplate = transactionTemplate;
@@ -61,6 +72,16 @@ public class ReservationServiceImpl implements ReservationService {
 
     @Override
     public ReservationResponse createReservation(String userId, String createdBy, CreateReservationRequest request) {
+        return createReservationWithMode(userId, createdBy, "SELF", null, request);
+    }
+
+    @Override
+    public ReservationResponse createReservationWithMode(
+            String userId,
+            String createdBy,
+            String reservationMode,
+            String batchId,
+            CreateReservationRequest request) {
         reservationValidator.validateCreateRequest(request);
         Device device = mustFindDevice(request.deviceId());
         DeviceCategory category = mustFindCategory(device.getCategoryId());
@@ -75,9 +96,10 @@ public class ReservationServiceImpl implements ReservationService {
                 String approvalMode = reservationValidator.resolveApprovalMode(device, category.getDefaultApprovalMode());
                 Reservation reservation = new Reservation();
                 reservation.setId(UuidUtil.randomUuid());
+                reservation.setBatchId(batchId);
                 reservation.setUserId(userId);
                 reservation.setCreatedBy(createdBy);
-                reservation.setReservationMode("SELF");
+                reservation.setReservationMode(reservationMode);
                 reservation.setDeviceId(device.getId());
                 reservation.setStartTime(request.startTime());
                 reservation.setEndTime(request.endTime());
@@ -88,6 +110,16 @@ public class ReservationServiceImpl implements ReservationService {
                 reservation.setSignStatus("NOT_CHECKED_IN");
                 reservationMapper.insert(reservation);
                 saveNotification(userId, "FIRST_APPROVAL_TODO", "IN_APP", "预约待审批", "您的预约已提交，等待设备管理员审批", reservation.getId(), "RESERVATION");
+                if ("ON_BEHALF".equals(reservationMode)) {
+                    saveNotification(
+                            userId,
+                            "ON_BEHALF_CREATED",
+                            "IN_APP",
+                            "收到代预约",
+                            "系统管理员已为您创建预约，请及时查看审批进度",
+                            reservation.getId(),
+                            "RESERVATION");
+                }
                 return toResponse(reservation);
             });
             if (response == null) {
@@ -97,6 +129,29 @@ public class ReservationServiceImpl implements ReservationService {
         } finally {
             lock.unlock();
         }
+    }
+
+    @Override
+    public ReservationResponse createProxyReservation(String operatorId, String operatorRole, ProxyReservationRequest request) {
+        if (!"SYSTEM_ADMIN".equals(operatorRole)) {
+            throw new BusinessException("只有系统管理员可以代预约");
+        }
+        User targetUser = mustFindUser(request.targetUserId());
+        Role targetRole = roleMapper.selectById(targetUser.getRoleId());
+        if (targetRole == null || !"USER".equals(targetRole.getName())) {
+            throw new BusinessException("系统管理员仅可代 USER 预约");
+        }
+        return createReservationWithMode(
+                targetUser.getId(),
+                operatorId,
+                "ON_BEHALF",
+                null,
+                new CreateReservationRequest(
+                        request.deviceId(),
+                        request.startTime(),
+                        request.endTime(),
+                        request.purpose(),
+                        request.remark()));
     }
 
     @Override
@@ -181,10 +236,21 @@ public class ReservationServiceImpl implements ReservationService {
         return reservation;
     }
 
+    private User mustFindUser(String userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException("目标用户不存在");
+        }
+        return user;
+    }
+
     private ReservationResponse toResponse(Reservation reservation) {
         return new ReservationResponse(
                 reservation.getId(),
+                reservation.getBatchId(),
                 reservation.getUserId(),
+                reservation.getCreatedBy(),
+                reservation.getReservationMode(),
                 reservation.getDeviceId(),
                 reservation.getStatus(),
                 reservation.getApprovalModeSnapshot(),
@@ -202,7 +268,7 @@ public class ReservationServiceImpl implements ReservationService {
         record.setContent(content);
         record.setStatus("SUCCESS");
         record.setRetryCount(0);
-        record.setReadFlag("IN_APP".equals(channel) ? 0 : 0);
+        record.setReadFlag(0);
         record.setRelatedId(relatedId);
         record.setRelatedType(relatedType);
         notificationRecordMapper.insert(record);

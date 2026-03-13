@@ -4,6 +4,7 @@ import com.jhun.backend.common.response.Result;
 import com.jhun.backend.config.security.AuthUserPrincipal;
 import com.jhun.backend.dto.reservation.AuditReservationRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
+import com.jhun.backend.dto.reservation.ProxyReservationRequest;
 import com.jhun.backend.dto.reservation.ReservationResponse;
 import com.jhun.backend.service.ReservationService;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -33,6 +34,13 @@ public class ReservationController {
             @AuthenticationPrincipal AuthUserPrincipal principal,
             @RequestBody CreateReservationRequest request) {
         return Result.success(reservationService.createReservation(principal.userId(), principal.userId(), request));
+    }
+
+    @PostMapping("/proxy")
+    public Result<ReservationResponse> createProxy(
+            @AuthenticationPrincipal AuthUserPrincipal principal,
+            @RequestBody ProxyReservationRequest request) {
+        return Result.success(reservationService.createProxyReservation(principal.userId(), principal.role(), request));
     }
 
     @PostMapping("/{id}/audit")
