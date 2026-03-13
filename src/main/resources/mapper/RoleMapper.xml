@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.RoleMapper">
+
+    <!--
+        按角色名称查询角色。
+        注册流程必须默认绑定 USER 角色，因此这里直接按角色名读取真相源中的固定三角色记录。
+    -->
+    <select id="findByName" resultType="com.jhun.backend.entity.Role">
+        SELECT id,
+               name,
+               description,
+               created_at
+        FROM role
+        WHERE name = #{name}
+        LIMIT 1
+    </select>
+</mapper>

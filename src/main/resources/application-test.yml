@@ -14,3 +14,8 @@ spring:
     port: 2525
     username: test
     password: test
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:testdb/task3-schema.sql
+      data-locations: classpath:testdb/task3-data.sql

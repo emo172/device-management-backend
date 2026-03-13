@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.UserMapper">
+
+    <!--
+        按用户名或邮箱查询登录用户。
+        认证链要求同一接口同时支持用户名和邮箱登录，因此这里统一用 or 条件查询账号入口。
+    -->
+    <select id="findByAccount" resultType="com.jhun.backend.entity.User">
+        SELECT id,
+               username,
+               email,
+               password_hash,
+               role_id,
+               real_name,
+               phone,
+               status,
+               freeze_status,
+               freeze_reason,
+               freeze_expire_time,
+               last_login_time,
+               created_at,
+               updated_at
+        FROM `user`
+        WHERE username = #{account}
+           OR email = #{account}
+        LIMIT 1
+    </select>
+
+    <!--
+        按邮箱查询用户。
+        密码重置流程以邮箱为主键入口，因此单独提供邮箱查询，避免误匹配用户名。
+    -->
+    <select id="findByEmail" resultType="com.jhun.backend.entity.User">
+        SELECT id,
+               username,
+               email,
+               password_hash,
+               role_id,
+               real_name,
+               phone,
+               status,
+               freeze_status,
+               freeze_reason,
+               freeze_expire_time,
+               last_login_time,
+               created_at,
+               updated_at
+        FROM `user`
+        WHERE email = #{email}
+        LIMIT 1
+    </select>
+
+    <!--
+        查询当前用户资料。
+        当前阶段仍返回用户表字段，角色名由服务层补齐，保留该查询入口是为了后续扩展用户资料聚合时不改服务签名。
+    -->
+    <select id="selectCurrentUserProfile" resultType="com.jhun.backend.entity.User">
+        SELECT id,
+               username,
+               email,
+               password_hash,
+               role_id,
+               real_name,
+               phone,
+               status,
+               freeze_status,
+               freeze_reason,
+               freeze_expire_time,
+               last_login_time,
+               created_at,
+               updated_at
+        FROM `user`
+        WHERE id = #{userId}
+        LIMIT 1
+    </select>
+</mapper>
