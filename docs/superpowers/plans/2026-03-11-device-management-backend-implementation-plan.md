@@ -4,9 +4,9 @@
 
 **Goal:** 基于当前最小化 Spring Boot 仓库，按系统设计、前后端目录设计与 `device_management.sql` 真相源，分阶段交付可联调、可测试、可验收的设备管理后端。
 
-**Architecture:** 保持当前 `com.jhun.backend` 包根，在该根下按 `config -> common -> dto -> entity -> mapper -> service -> controller -> scheduler -> util` 扩展工程结构。优先对齐 Spring Boot 3.x、真实 SQL、统一响应/异常、安全与测试基座，再按“认证权限与通知底座 -> 设备主数据 -> 预约双审批与批量预约 -> 借还逾期 -> AI/统计/发布”的顺序实现业务闭环。
+**Architecture:** 保持当前 `com.jhun.backend` 包根，在该根下按 `config -> common -> dto -> entity -> mapper -> service -> controller -> scheduler -> util` 扩展工程结构。优先对齐 Spring Boot 4.x、真实 SQL、统一响应/异常、安全与测试基座，再按“认证权限与通知底座 -> 设备主数据 -> 预约双审批与批量预约 -> 借还逾期 -> AI/统计/发布”的顺序实现业务闭环。
 
-**Tech Stack:** Java 21, Maven 3.x, Spring Boot 3.x, Spring Security 6.x, MyBatis-Plus, MySQL 8.x, Redis, JWT, Spring AI, JUnit 5, MockMvc, Lombok
+**Tech Stack:** Java 21, Maven 3.x, Spring Boot 4.x, Spring Security 6.x, MyBatis-Plus, MySQL 8.x, Redis, JWT, Spring AI, JUnit 5, MockMvc, Lombok
 
 ---
 
@@ -18,7 +18,7 @@
   - `src/main/resources/application.properties`
   - 最小化 `pom.xml`
 - 当前包根为 `com.jhun.backend`，后续计划**不迁移**到 `com.jhu.device.management`
-- 当前 `pom.xml` 使用 Spring Boot `4.0.3` 初始化骨架，与目标资料的 Spring Boot `3.x` 不一致，需在首个 Chunk 对齐
+- 当前 `pom.xml` 使用 Spring Boot `4.0.3` 初始化骨架，后续实现以 Spring Boot `4.x` 作为工程基线继续扩展
 - 业务与数据真相源以 `device_management.sql` 为准，关键口径包括：
   - 主键统一 `String` UUID
   - 角色固定为 `USER` / `DEVICE_ADMIN` / `SYSTEM_ADMIN`

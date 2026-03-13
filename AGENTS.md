@@ -177,9 +177,9 @@ mvn clean verify
 |------|----------|------|
 | Java | 21 | 语言与运行时 |
 | Maven | 3.x | 构建与依赖管理 |
-| Spring Boot | 3.x | 目标实现基线 |
+| Spring Boot | 4.x | 目标实现基线 |
 | Spring Security | 6.x | 认证与鉴权 |
-| MyBatis-Plus | Boot 3 兼容版本 | 数据访问 |
+| MyBatis-Plus | Boot 4 兼容版本 | 数据访问 |
 | MySQL | 8.x | 关系型数据库 |
 | Redis | Latest | Token / 会话 / 验证码缓存 |
 | JWT | Latest | Access Token / Refresh Token |
