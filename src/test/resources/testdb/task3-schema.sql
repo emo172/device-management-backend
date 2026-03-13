@@ -105,3 +105,14 @@ CREATE TABLE device (
     CONSTRAINT uk_device_number UNIQUE (device_number),
     CONSTRAINT fk_device_category_id FOREIGN KEY (category_id) REFERENCES device_category (id)
 );
+
+CREATE TABLE device_status_log (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    device_id VARCHAR(36) NOT NULL,
+    old_status VARCHAR(20),
+    new_status VARCHAR(20) NOT NULL,
+    reason VARCHAR(500),
+    operator_id VARCHAR(36),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_dsl_device_id FOREIGN KEY (device_id) REFERENCES device (id)
+);

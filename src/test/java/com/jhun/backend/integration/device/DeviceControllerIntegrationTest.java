@@ -3,6 +3,7 @@ package com.jhun.backend.integration.device;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -23,6 +24,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -138,7 +140,8 @@ class DeviceControllerIntegrationTest {
         mockMvc.perform(get("/api/devices")
                         .header("Authorization", token)
                         .param("page", "1")
-                        .param("size", "10"))
+                        .param("size", "10")
+                        .param("categoryName", categoryName))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.records").isEmpty());
     }
@@ -192,6 +195,64 @@ class DeviceControllerIntegrationTest {
                         .param("categoryName", categoryName))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.records[0].name").value("彩色打印机"));
+    }
+
+    /**
+     * 验证设备图片上传后可在详情中回传图片地址和状态日志，保护设备详情页的可追溯能力。
+     */
+    @Test
+    void shouldUploadImageAndReturnStatusLogsInDetail() throws Exception {
+        String token = bearer(createAdminUser("device-admin-4", "device-admin-4@example.com"));
+        String categoryName = "设备图片-状态日志";
+        createCategory(token, categoryName);
+
+        MvcResult createResult = mockMvc.perform(post("/api/devices")
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "摄像机",
+                                  "deviceNumber": "DEV-CAM-001",
+                                  "categoryName": "%s",
+                                  "status": "AVAILABLE",
+                                  "description": "需要图片与状态日志",
+                                  "location": "Studio-1"
+                                }
+                                """.formatted(categoryName)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String deviceId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
+
+        MockMultipartFile image = new MockMultipartFile(
+                "file",
+                "camera.png",
+                MediaType.IMAGE_PNG_VALUE,
+                "fake-image".getBytes());
+
+        mockMvc.perform(multipart("/api/devices/{id}/image", deviceId)
+                        .file(image)
+                        .header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.imageUrl").isNotEmpty());
+
+        mockMvc.perform(put("/api/devices/{id}/status", deviceId)
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "MAINTENANCE",
+                                  "reason": "镜头调试"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("MAINTENANCE"));
+
+        mockMvc.perform(get("/api/devices/{id}", deviceId)
+                        .header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.imageUrl").isNotEmpty())
+                .andExpect(jsonPath("$.data.statusLogs[0].newStatus").value("MAINTENANCE"));
     }
 
     private void createCategory(String token, String name) throws Exception {

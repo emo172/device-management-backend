@@ -2,20 +2,28 @@ package com.jhun.backend.service.impl;
 
 import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.dto.device.CreateDeviceRequest;
+import com.jhun.backend.dto.device.DeviceDetailResponse;
 import com.jhun.backend.dto.device.DevicePageResponse;
 import com.jhun.backend.dto.device.DeviceResponse;
+import com.jhun.backend.dto.device.DeviceStatusLogResponse;
+import com.jhun.backend.dto.device.UpdateDeviceStatusRequest;
 import com.jhun.backend.dto.device.UpdateDeviceRequest;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
+import com.jhun.backend.entity.DeviceStatusLog;
 import com.jhun.backend.mapper.DeviceCategoryMapper;
 import com.jhun.backend.mapper.DeviceMapper;
+import com.jhun.backend.mapper.DeviceStatusLogMapper;
 import com.jhun.backend.service.DeviceService;
+import com.jhun.backend.service.support.device.DeviceImageStorageSupport;
 import com.jhun.backend.util.UuidUtil;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 /**
  * 设备服务实现。
@@ -25,10 +33,18 @@ public class DeviceServiceImpl implements DeviceService {
 
     private final DeviceMapper deviceMapper;
     private final DeviceCategoryMapper deviceCategoryMapper;
+    private final DeviceStatusLogMapper deviceStatusLogMapper;
+    private final DeviceImageStorageSupport deviceImageStorageSupport;
 
-    public DeviceServiceImpl(DeviceMapper deviceMapper, DeviceCategoryMapper deviceCategoryMapper) {
+    public DeviceServiceImpl(
+            DeviceMapper deviceMapper,
+            DeviceCategoryMapper deviceCategoryMapper,
+            DeviceStatusLogMapper deviceStatusLogMapper,
+            DeviceImageStorageSupport deviceImageStorageSupport) {
         this.deviceMapper = deviceMapper;
         this.deviceCategoryMapper = deviceCategoryMapper;
+        this.deviceStatusLogMapper = deviceStatusLogMapper;
+        this.deviceImageStorageSupport = deviceImageStorageSupport;
     }
 
     @Override
@@ -95,6 +111,37 @@ public class DeviceServiceImpl implements DeviceService {
         return new DevicePageResponse(devices.size(), records);
     }
 
+    @Override
+    public DeviceDetailResponse getDeviceDetail(String deviceId) {
+        Device device = mustFindDevice(deviceId);
+        DeviceCategory category = deviceCategoryMapper.selectById(device.getCategoryId());
+        return toDetailResponse(device, category == null ? null : category.getName());
+    }
+
+    @Override
+    @Transactional
+    public DeviceDetailResponse uploadImage(String deviceId, MultipartFile file, String operatorId) {
+        Device device = mustFindDevice(deviceId);
+        device.setImageUrl(deviceImageStorageSupport.store(deviceId, file));
+        deviceMapper.updateById(device);
+        DeviceCategory category = deviceCategoryMapper.selectById(device.getCategoryId());
+        return toDetailResponse(device, category == null ? null : category.getName());
+    }
+
+    @Override
+    @Transactional
+    public DeviceResponse updateDeviceStatus(String deviceId, UpdateDeviceStatusRequest request, String operatorId) {
+        Device device = mustFindDevice(deviceId);
+        validateStatusTransition(device.getStatus(), request.status());
+        String oldStatus = device.getStatus();
+        device.setStatus(request.status());
+        device.setStatusChangeReason(request.reason());
+        deviceMapper.updateById(device);
+        saveStatusLog(device.getId(), oldStatus, request.status(), request.reason(), operatorId);
+        DeviceCategory category = deviceCategoryMapper.selectById(device.getCategoryId());
+        return toResponse(device, category == null ? null : category.getName());
+    }
+
     private DeviceCategory findCategoryByName(String categoryName) {
         DeviceCategory root = deviceCategoryMapper.findRootByName(categoryName);
         if (root != null) {
@@ -124,5 +171,40 @@ public class DeviceServiceImpl implements DeviceService {
                 device.getStatus(),
                 device.getDescription(),
                 device.getLocation());
+    }
+
+    private DeviceDetailResponse toDetailResponse(Device device, String categoryName) {
+        List<DeviceStatusLogResponse> statusLogs = deviceStatusLogMapper.findByDeviceId(device.getId()).stream()
+                .map(log -> new DeviceStatusLogResponse(log.getOldStatus(), log.getNewStatus(), log.getReason()))
+                .toList();
+        return new DeviceDetailResponse(
+                device.getId(),
+                device.getName(),
+                device.getDeviceNumber(),
+                device.getCategoryId(),
+                categoryName,
+                device.getStatus(),
+                device.getDescription(),
+                device.getLocation(),
+                device.getImageUrl(),
+                statusLogs);
+    }
+
+    private void validateStatusTransition(String oldStatus, String newStatus) {
+        if ("BORROWED".equals(oldStatus) && "AVAILABLE".equals(newStatus)) {
+            throw new BusinessException("借出设备不能直接改回可借，必须通过归还流程完成");
+        }
+    }
+
+    private void saveStatusLog(String deviceId, String oldStatus, String newStatus, String reason, String operatorId) {
+        DeviceStatusLog log = new DeviceStatusLog();
+        log.setId(UuidUtil.randomUuid());
+        log.setDeviceId(deviceId);
+        log.setOldStatus(oldStatus);
+        log.setNewStatus(newStatus);
+        log.setReason(reason);
+        log.setOperatorId(operatorId);
+        log.setCreatedAt(LocalDateTime.now());
+        deviceStatusLogMapper.insert(log);
     }
 }
