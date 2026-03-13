@@ -11,6 +11,7 @@ public record ReservationResponse(
         String reservationMode,
         String deviceId,
         String status,
+        String signStatus,
         String approvalModeSnapshot,
         String deviceApproverId,
         String systemApproverId) {

@@ -3,13 +3,16 @@ package com.jhun.backend.controller;
 import com.jhun.backend.common.response.Result;
 import com.jhun.backend.config.security.AuthUserPrincipal;
 import com.jhun.backend.dto.reservation.AuditReservationRequest;
+import com.jhun.backend.dto.reservation.CheckInRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
+import com.jhun.backend.dto.reservation.ManualProcessRequest;
 import com.jhun.backend.dto.reservation.ProxyReservationRequest;
 import com.jhun.backend.dto.reservation.ReservationResponse;
 import com.jhun.backend.service.ReservationService;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -57,5 +60,21 @@ public class ReservationController {
             @AuthenticationPrincipal AuthUserPrincipal principal,
             @RequestBody AuditReservationRequest request) {
         return Result.success(reservationService.systemApprove(reservationId, principal.userId(), principal.role(), request));
+    }
+
+    @PostMapping("/{id}/check-in")
+    public Result<ReservationResponse> checkIn(
+            @PathVariable("id") String reservationId,
+            @AuthenticationPrincipal AuthUserPrincipal principal,
+            @RequestBody CheckInRequest request) {
+        return Result.success(reservationService.checkIn(reservationId, principal.userId(), principal.role(), request));
+    }
+
+    @PutMapping("/{id}/manual-process")
+    public Result<ReservationResponse> manualProcess(
+            @PathVariable("id") String reservationId,
+            @AuthenticationPrincipal AuthUserPrincipal principal,
+            @RequestBody ManualProcessRequest request) {
+        return Result.success(reservationService.manualProcess(reservationId, principal.userId(), principal.role(), request));
     }
 }

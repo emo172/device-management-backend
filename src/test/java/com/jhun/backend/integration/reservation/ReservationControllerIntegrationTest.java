@@ -2,6 +2,7 @@ package com.jhun.backend.integration.reservation;
 
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -14,6 +15,7 @@ import com.jhun.backend.entity.Role;
 import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.DeviceCategoryMapper;
 import com.jhun.backend.mapper.DeviceMapper;
+import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
@@ -48,6 +50,8 @@ class ReservationControllerIntegrationTest {
     private DeviceCategoryMapper deviceCategoryMapper;
     @Autowired
     private DeviceMapper deviceMapper;
+    @Autowired
+    private ReservationMapper reservationMapper;
     @Autowired
     private PasswordEncoder passwordEncoder;
     @Autowired
@@ -173,6 +177,125 @@ class ReservationControllerIntegrationTest {
                                 }
                                 """))
                 .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证用户在签到窗口内可以签到，保护“开始前 30 分钟到开始后 30 分钟为正常签到”的规则。
+     */
+    @Test
+    void shouldCheckInWithinWindow() throws Exception {
+        User user = createUser("rsv-ci-u1", "reserve-user-checkin-1@example.com", "USER");
+        User deviceAdmin = createUser("rsv-ci-da1", "reserve-device-admin-checkin-1@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createApprovedReservation(user, deviceAdmin, device,
+                "2026-03-21T09:00:00", "2026-03-21T10:00:00");
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "2026-03-21T09:20:00"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.signStatus").value("CHECKED_IN"));
+    }
+
+    /**
+     * 验证开始后超过 60 分钟签到会被拒绝，保护“超过 60 分钟未签到则预约过期”的规则。
+     */
+    @Test
+    void shouldRejectCheckInAfterTimeoutWindow() throws Exception {
+        User user = createUser("rsv-ci-u2", "reserve-user-checkin-2@example.com", "USER");
+        User deviceAdmin = createUser("rsv-ci-da2", "reserve-device-admin-checkin-2@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createApprovedReservation(user, deviceAdmin, device,
+                "2026-03-21T11:00:00", "2026-03-21T12:00:00");
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "2026-03-21T12:10:00"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证设备管理员可以处理待人工预约，保护 PENDING_MANUAL 人工闭环能力。
+     */
+    @Test
+    void shouldAllowDeviceAdminManualProcess() throws Exception {
+        User user = createUser("rsv-man-u1", "reserve-user-manual-1@example.com", "USER");
+        User deviceAdmin = createUser("rsv-man-da1", "reserve-device-admin-manual-1@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createApprovedReservation(user, deviceAdmin, device,
+                "2026-03-21T13:00:00", "2026-03-21T14:00:00");
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "2026-03-21T13:20:00"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        var reservation = reservationMapper.selectById(reservationId);
+        reservation.setStatus("PENDING_MANUAL");
+        reservationMapper.updateById(reservation);
+
+        mockMvc.perform(put("/api/reservations/{id}/manual-process", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "approved": true,
+                                  "remark": "人工复核后保持有效"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    private String createApprovedReservation(
+            User user,
+            User deviceAdmin,
+            Device device,
+            String startTime,
+            String endTime) throws Exception {
+        MvcResult createResult = mockMvc.perform(post("/api/reservations")
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "deviceId": "%s",
+                                  "startTime": "%s",
+                                  "endTime": "%s",
+                                  "purpose": "签到测试预约",
+                                  "remark": "用于 Task10"
+                                }
+                                """.formatted(device.getId(), startTime, endTime)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String reservationId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
+
+        mockMvc.perform(post("/api/reservations/{id}/audit", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "approved": true,
+                                  "remark": "审批通过"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+        return reservationId;
     }
 
     private User createUser(String username, String email, String roleName) {

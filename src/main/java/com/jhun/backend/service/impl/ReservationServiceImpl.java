@@ -2,7 +2,9 @@ package com.jhun.backend.service.impl;
 
 import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.dto.reservation.AuditReservationRequest;
+import com.jhun.backend.dto.reservation.CheckInRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
+import com.jhun.backend.dto.reservation.ManualProcessRequest;
 import com.jhun.backend.dto.reservation.ProxyReservationRequest;
 import com.jhun.backend.dto.reservation.ReservationResponse;
 import com.jhun.backend.entity.Device;
@@ -156,6 +158,72 @@ public class ReservationServiceImpl implements ReservationService {
 
     @Override
     @Transactional
+    public ReservationResponse checkIn(String reservationId, String userId, String role, CheckInRequest request) {
+        if (!"USER".equals(role)) {
+            throw new BusinessException("只有普通用户可以执行签到");
+        }
+        Reservation reservation = mustFindReservation(reservationId);
+        if (!userId.equals(reservation.getUserId())) {
+            throw new BusinessException("只能签到本人预约");
+        }
+        if (!"APPROVED".equals(reservation.getStatus())) {
+            throw new BusinessException("当前预约状态不允许签到");
+        }
+        if (!"NOT_CHECKED_IN".equals(reservation.getSignStatus())) {
+            throw new BusinessException("该预约已完成签到");
+        }
+
+        LocalDateTime checkInTime = request != null && request.checkInTime() != null
+                ? request.checkInTime()
+                : LocalDateTime.now();
+        LocalDateTime normalStart = reservation.getStartTime().minusMinutes(30);
+        LocalDateTime normalEnd = reservation.getStartTime().plusMinutes(30);
+        LocalDateTime timeoutEnd = reservation.getStartTime().plusMinutes(60);
+        if (checkInTime.isBefore(normalStart)) {
+            throw new BusinessException("未到签到开放时间");
+        }
+        if (checkInTime.isAfter(timeoutEnd)) {
+            reservation.setStatus("EXPIRED");
+            reservation.setUpdatedAt(LocalDateTime.now());
+            reservationMapper.updateById(reservation);
+            saveNotification(reservation.getUserId(), "CHECKIN_TIMEOUT_WARNING", "IN_APP", "签到超时", "签到时间已超过 60 分钟窗口，预约已过期", reservation.getId(), "RESERVATION");
+            throw new BusinessException("签到超时，预约已过期");
+        }
+
+        reservation.setCheckedInAt(checkInTime);
+        reservation.setSignStatus(checkInTime.isAfter(normalEnd) ? "CHECKED_IN_TIMEOUT" : "CHECKED_IN");
+        reservation.setUpdatedAt(LocalDateTime.now());
+        reservationMapper.updateById(reservation);
+        return toResponse(reservation);
+    }
+
+    @Override
+    @Transactional
+    public ReservationResponse manualProcess(String reservationId, String operatorId, String role, ManualProcessRequest request) {
+        if (!"DEVICE_ADMIN".equals(role)) {
+            throw new BusinessException("只有设备管理员可以处理待人工预约");
+        }
+        Reservation reservation = mustFindReservation(reservationId);
+        if (!"PENDING_MANUAL".equals(reservation.getStatus())) {
+            throw new BusinessException("当前预约不处于待人工处理状态");
+        }
+
+        if (Boolean.TRUE.equals(request.approved())) {
+            reservation.setStatus("APPROVED");
+            reservation.setRemark(request.remark());
+        } else {
+            reservation.setStatus("CANCELLED");
+            reservation.setCancelReason(request.remark());
+            reservation.setCancelTime(LocalDateTime.now());
+            saveNotification(reservation.getUserId(), "RESERVATION_CANCELLED", "IN_APP", "预约已取消", "待人工处理预约已被管理员取消", reservation.getId(), "RESERVATION");
+        }
+        reservation.setUpdatedAt(LocalDateTime.now());
+        reservationMapper.updateById(reservation);
+        return toResponse(reservation);
+    }
+
+    @Override
+    @Transactional
     public ReservationResponse deviceApprove(String reservationId, String approverId, String role, AuditReservationRequest request) {
         if (!"DEVICE_ADMIN".equals(role)) {
             throw new BusinessException("只有设备管理员可以执行第一审");
@@ -200,6 +268,7 @@ public class ReservationServiceImpl implements ReservationService {
         reservation.setSystemApprovedAt(LocalDateTime.now());
         reservation.setSystemApprovalRemark(request.remark());
         reservation.setStatus(Boolean.TRUE.equals(request.approved()) ? "APPROVED" : "REJECTED");
+        reservation.setUpdatedAt(LocalDateTime.now());
         reservationMapper.updateById(reservation);
         saveNotification(
                 reservation.getUserId(),
@@ -253,6 +322,7 @@ public class ReservationServiceImpl implements ReservationService {
                 reservation.getReservationMode(),
                 reservation.getDeviceId(),
                 reservation.getStatus(),
+                reservation.getSignStatus(),
                 reservation.getApprovalModeSnapshot(),
                 reservation.getDeviceApproverId(),
                 reservation.getSystemApproverId());
