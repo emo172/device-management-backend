@@ -1,6 +1,6 @@
 # AGENTS.md - 设备管理后端项目
 
-本文档用于指导本仓库内的 Agentic Coding Agents 进行统一开发、测试与文档编写。
+本文档用于指导本仓库内的 Agentic Coding Agents 统一开展后端设计、开发、测试、联调与文档维护工作。
 
 ---
 
@@ -13,13 +13,80 @@
 
 ---
 
-## 02 Git 分支管理
+## 02 真相源与冲突仲裁
 
-### 02-1 核心原则
+### 02-1 资料真相源
 
-禁止直接在 `main` 分支开发，所有开发任务必须在功能分支完成。
+后端实现、计划与文档维护时，默认以下资料为真相源：
 
-### 02-2 分支命名规范
+1. `系统功能设计/` 目录下的 13 份系统设计文档
+2. `后端项目目录结构.md`
+3. `前端项目目录结构.md`
+4. `device_management.sql`
+5. 当前仓库实际文件结构（仅用于判断包路径、启动类、依赖现状与已有实现）
+
+### 02-2 冲突处理规则
+
+当资料之间出现不一致时，按以下顺序仲裁：
+
+1. **不做项 / 范围边界**
+2. **当前仓库实际文件**（仅限包路径、启动类、依赖版本、已有代码现状）
+3. **`device_management.sql`**（角色、审批模型、表结构、字段、索引、枚举、种子数据、通知模型、统计模型）
+4. **API 文档与前端项目目录结构**（接口路径、HTTP 方法、分页/筛选/鉴权/联调承载）
+5. **其余系统设计文字说明与图示**
+
+> 说明：当前外部资料存在“旧两角色 / 旧单审批 / 旧通知模型”和“SQL 新口径”并存现象。凡涉及实现基线的核心契约，一律优先采用 SQL 新口径。
+
+### 02-3 SQL 优先仲裁项
+
+以下内容若与旧文档冲突，统一以 `device_management.sql` 为准：
+
+- 角色体系为 `USER` / `DEVICE_ADMIN` / `SYSTEM_ADMIN` 三角色，而非旧文档中的 `USER` / `ADMIN`
+- 预约支持 `DEVICE_ONLY` 与 `DEVICE_THEN_SYSTEM` 两种审批模式
+- 预约状态为 `PENDING_DEVICE_APPROVAL` / `PENDING_SYSTEM_APPROVAL` / `PENDING_MANUAL` / `APPROVED` / `REJECTED` / `CANCELLED` / `EXPIRED`
+- 存在正式表 `reservation_batch`，批量预约不是临时扩展功能
+- `notification_record` 已包含 `channel`、`read_flag`、`read_at`、`template_vars`、`retry_count`、`related_id`、`related_type`
+- 通知渠道为 `IN_APP` / `EMAIL` / `SMS`，其中已读能力仅对 `IN_APP` 生效
+- 统计模型使用 `stat_type` / `granularity` / `subject_type` / `subject_value`
+
+### 02-4 数据库与接口真相源
+
+- **数据库结构** 以 `device_management.sql` 为准，尤其是：表名、字段名、默认值、索引、外键、种子数据、枚举注释
+- **主键类型** 统一为 `VARCHAR(36)` / Java `String` UUID，严禁在代码、测试、计划或文档中使用 `Long` / `BIGINT` 作为主键假设
+- **接口协议** 统一 `/api` 前缀、统一 Bearer Token、统一 JSON 响应；HTTP 方法按 API 文档与前端承载执行，现有明确包含 `GET` / `POST` / `PUT` / `DELETE`
+- **文件上传** 统一按 `multipart/form-data` 处理
+- **术语与状态** 必须遵循分域状态集，禁止脱离业务域解释 `PENDING`、`BORROWED`、`FAILED` 等同码状态
+
+### 02-5 文档同步要求
+
+出现以下变更时，必须同步更新相关文档：
+
+- 数据库表结构、字段、索引、约束、枚举值变更
+- 接口路径、HTTP 方法、请求体、响应体、权限要求变更
+- 业务状态流转、时间窗口、定时任务编号或 Cron 变更
+- 前后端联动页面的接口承载方式变更
+- SQL 新口径与旧设计文档之间的冲突仲裁结果变更
+
+若发现资料冲突且无法直接裁决，统一使用以下格式记录：
+
+> [!question]+ 待业务确认（含位置与原因）
+> - **冲突位置**: 章节或文件位置
+> - **冲突原因**: 具体矛盾点
+> - **相关条目**: 相关需求 / API / SQL / 页面
+> - **建议方案**: 候选处理方案
+
+---
+
+## 03 Git 分支管理
+
+### 03-1 核心原则
+
+- 禁止直接在 `main` 分支开发，所有开发任务必须在功能分支完成
+- 默认按功能闭环提交，避免“半个模块”长时间悬挂
+- 未经用户明确要求，不主动执行提交、合并、推送等 Git 写操作
+- 若目标文件已存在未提交本地修改，优先在现有修改基础上增量调整，不得直接覆盖用户内容
+
+### 03-2 分支命名规范
 
 ```bash
 # 功能开发
@@ -34,7 +101,7 @@ fix/login-token-expire
 refactor/模块名称
 ```
 
-### 02-3 本地开发流程
+### 03-3 本地开发流程
 
 ```bash
 # 1) 基于 main 创建新分支
@@ -44,15 +111,15 @@ git checkout -b feature/xxx
 
 # 2) 开发并提交
 git add .
-git commit -m "feat: 新增 xxx 功能"
+git commit -m "feat(auth): 新增 xxx 功能"
 
 # 3) 合并前必须通过构建和测试
 mvn clean verify
 ```
 
-### 02-4 提交信息规范
+### 03-4 提交信息规范
 
-```
+```text
 <type>(<scope>): <subject>
 ```
 
@@ -60,660 +127,378 @@ mvn clean verify
 
 ---
 
-## 03 项目概述
+## 04 项目定位与范围边界
 
-### 03-1 技术栈
+### 04-1 项目目标
 
-| 技术 | 版本 | 说明 |
-|------|------|------|
-| Java | 21 | 语言与运行时 |
-| Maven | 3.x | 构建与依赖管理 |
-| Spring Boot | 3.x | 后端框架 |
-| Spring Security | 6.x | 认证与权限 |
-| MyBatis-Plus | Latest | 数据访问 |
-| MySQL | 8.x | 关系型数据库 |
-| Redis | Latest | 缓存与会话 |
-| JWT | Latest | Token 认证 |
-| Spring AI | Latest | LLM 集成 |
+本项目是“智能设备管理系统”后端，核心覆盖以下业务域：
 
-### 03-2 架构约定
+- 用户与权限管理
+- 设备与设备分类管理
+- 预约管理
+- 借还管理
+- 逾期治理
+- 智能对话预约
+- 统计分析
+- 消息通知与定时任务支撑
 
-- 使用三层架构：`Controller -> Service -> Mapper`
-- 使用 `DTO/VO` 进行接口输入输出隔离
-- 使用 `common/exception` 统一异常处理
-- 使用 `common/response` 统一响应体
+### 04-2 本期不做项
 
-### 03-3 功能模块映射
+以下内容默认不在本期范围内：
 
-| 模块 | 说明 | 对应需求章节 |
-|------|------|--------------|
-| 用户与权限 | 用户注册、登录、权限控制、冻结解冻 | 需求分析 #3.1 节 |
-| 设备管理 | 设备 CRUD、分类管理、状态变更记录 | 需求分析 #3.2 节 |
-| 预约管理 | 预约申请、审核、签到、人工处理 | 需求分析 #3.3 节 |
-| 借还管理 | 借用确认、归还确认 | 需求分析 #3.4 节 |
-| 逾期管理 | 逾期识别、处理、统计 | 需求分析 #3.5 节 |
-| 智能对话 | AI 对话、意图识别、提示模板管理 | 需求分析 #3.6 节 |
-| 统计分析 | 数据统计、预聚合 | 需求分析 #3.7 节 |
+- 移动端 App / 微信小程序
+- 微信通知、日历同步、开放平台、多语言
+- 独立维修工单、财务结算、Excel / PDF 文件导出
+- 语音正式能力（仅预留扩展入口，不实现 ASR / TTS）
+- RAG、联网检索、多模型编排、Agent 自主决策、图像识别
+- 开放式库存系统、财务结算、推荐系统、长期记忆
+
+### 04-3 AI 能力边界
+
+- 本期 AI 以**文本对话**为主，语音只保留扩展入口
+- AI 只能通过 Service 层调用业务能力，不得直接写数据库
+- AI 意图固定为 `RESERVE` / `QUERY` / `CANCEL` / `HELP` / `UNKNOWN`
+- Prompt 模板是正式模块；`DialogConfig` 当前无稳定数据模型，不纳入本期实现范围
 
 ---
 
-## 04 构建、测试与质量命令
+## 05 工程现状与目标基线
 
-### 04-1 Maven 常用命令
+### 05-1 当前仓库现状
+
+- 当前启动类为 `src/main/java/com/jhun/backend/DeviceManagementBackendApplication.java`
+- 当前包根为 `com.jhun.backend`
+- 当前 `pom.xml` 仍是 Spring Boot `4.0.3` 的最小初始化骨架
+- 当前仓库尚未落地 `config/common/dto/entity/mapper/service/controller/scheduler` 目标结构
+
+### 05-2 目标工程基线
+
+| 技术 | 版本基线 | 说明 |
+|------|----------|------|
+| Java | 21 | 语言与运行时 |
+| Maven | 3.x | 构建与依赖管理 |
+| Spring Boot | 3.x | 目标实现基线 |
+| Spring Security | 6.x | 认证与鉴权 |
+| MyBatis-Plus | Boot 3 兼容版本 | 数据访问 |
+| MySQL | 8.x | 关系型数据库 |
+| Redis | Latest | Token / 会话 / 验证码缓存 |
+| JWT | Latest | Access Token / Refresh Token |
+| Spring AI | Latest | LLM 接入层 |
+| SMTP | - | 邮件通知 |
+
+> 强约束：除非用户明确要求，不主动重命名启动类或迁移包根；后续所有新增目录默认继续落在 `src/main/java/com/jhun/backend/` 下。
+
+### 05-3 分层与目录约定
+
+项目按以下结构组织：
+
+```text
+src/main/java/com/jhun/backend/
+├── config/
+├── common/
+├── dto/
+├── entity/
+├── mapper/
+├── service/
+├── controller/
+├── scheduler/
+└── util/
+```
+
+核心约定：
+
+- 采用三层架构：`Controller -> Service -> Mapper`
+- 使用 DTO 隔离接口输入输出，不直接暴露 Entity
+- 统一响应放在 `common/response/`，统一异常放在 `common/exception/`
+- `service/support/` 用于放置校验器、检测器、通知装配器、LLM 客户端等辅助组件
+- `scheduler/` 必须按业务域拆分：`reservation/`、`overdue/`、`statistics/`、`system/`
+- MyBatis XML 放在 `src/main/resources/mapper/`
+- 邮件模板放在 `src/main/resources/templates/email/`
+- Prompt 模板放在 `src/main/resources/templates/ai/`
+- 初始化 SQL 放在 `src/main/resources/sql/`
+- 测试分为 `src/test/java/com/jhun/backend/unit/` 与 `src/test/java/com/jhun/backend/integration/`
+
+---
+
+## 06 角色、审批模型与模块边界
+
+### 06-1 固定角色边界
+
+系统固定且互斥 3 类角色：
+
+| 角色 | 说明 | 关键边界 |
+|------|------|----------|
+| `USER` | 普通用户 | 浏览设备、提交本人预约、发起本人批量预约、签到、取消本人预约、查看本人记录、使用 AI 文本对话 |
+| `DEVICE_ADMIN` | 设备管理员 | 管理设备生命周期、执行预约第一审、确认借用与归还、处理逾期 |
+| `SYSTEM_ADMIN` | 系统管理员 | 管理用户与角色权限、冻结/解冻用户、执行预约第二审、代预约、管理型批量预约、统计分析、Prompt 模板 |
+
+强约束：
+
+- 注册用户默认绑定 `USER`
+- 不允许引入第四种业务角色类型
+- `DEVICE_ADMIN` 不得提交本人预约
+- `SYSTEM_ADMIN` 不参与借用确认、归还确认和逾期处理
+- `SYSTEM_ADMIN` 仅可代 `USER` 预约，不得代 `DEVICE_ADMIN` 或 `SYSTEM_ADMIN` 预约
+
+### 06-2 审批与预约模型
+
+- 审批模式固定为 `DEVICE_ONLY` / `DEVICE_THEN_SYSTEM`
+- 设备分类可配置默认审批模式，设备可配置覆盖审批模式
+- 预约表必须保存 `approval_mode_snapshot`
+- 第一审仅允许 `DEVICE_ADMIN` 执行
+- 第二审仅允许 `SYSTEM_ADMIN` 执行
+- 同一账号不得完成双审两步，该规则必须在应用层强校验
+- 预约模式固定为 `SELF` / `ON_BEHALF`
+- 批量预约是正式能力，对应表 `reservation_batch`
+
+### 06-3 必备模块与建议接口前缀
+
+| 模块 | Controller | 建议接口前缀 | 核心实体 / 记录 |
+|------|------------|--------------|------------------|
+| 认证与账户 | `AuthController` | `/api/auth` | `User`、`PasswordHistory` |
+| 用户管理 | `UserController` | `/api/admin/users` | `User` |
+| 角色权限 | `RoleController` | `/api/admin/roles` | `Role`、`Permission`、`RolePermission` |
+| 设备管理 | `DeviceController` | `/api/devices` | `Device`、`DeviceStatusLog` |
+| 设备分类 | `DeviceCategoryController` | `/api/device-categories` | `DeviceCategory` |
+| 预约管理 | `ReservationController` | `/api/reservations` | `Reservation` |
+| 预约批次 | `ReservationBatchController` | `/api/reservation-batches` | `ReservationBatch` |
+| 借还管理 | `BorrowController` | `/api/borrow-records` | `BorrowRecord` |
+| 逾期管理 | `OverdueController` | `/api/overdue-records` | `OverdueRecord` |
+| 通知管理 | `NotificationController` | `/api/notifications` | `NotificationRecord` |
+| AI 对话 | `AiController` | `/api/ai` | `ChatHistory` |
+| Prompt 模板 | `PromptTemplateController` | `/api/ai/prompts*` | `PromptTemplate` |
+| 统计分析 | `StatisticsController` | `/api/statistics` | `StatisticsDaily` |
+
+---
+
+## 07 核心数据模型与枚举契约
+
+### 07-1 核心表清单
+
+数据库核心表至少包括以下 16 张：
+
+- `role`
+- `permission`
+- `user`
+- `role_permission`
+- `password_history`
+- `device_category`
+- `device`
+- `device_status_log`
+- `reservation_batch`
+- `reservation`
+- `borrow_record`
+- `overdue_record`
+- `notification_record`
+- `chat_history`
+- `prompt_template`
+- `statistics_daily`
+
+### 07-2 必备枚举集合
+
+至少显式维护以下枚举或等价常量：
+
+- `RoleCode`: `USER` / `DEVICE_ADMIN` / `SYSTEM_ADMIN`
+- `DeviceStatus`: `AVAILABLE` / `BORROWED` / `MAINTENANCE` / `DISABLED` / `DELETED`
+- `ApprovalMode`: `DEVICE_ONLY` / `DEVICE_THEN_SYSTEM`
+- `ReservationMode`: `SELF` / `ON_BEHALF`
+- `ReservationStatus`: `PENDING_DEVICE_APPROVAL` / `PENDING_SYSTEM_APPROVAL` / `PENDING_MANUAL` / `APPROVED` / `REJECTED` / `CANCELLED` / `EXPIRED`
+- `ReservationBatchStatus`: `PROCESSING` / `SUCCESS` / `PARTIAL_SUCCESS` / `FAILED` / `CANCELLED`
+- `CheckInStatus`: `NOT_CHECKED_IN` / `CHECKED_IN` / `CHECKED_IN_TIMEOUT`
+- `BorrowStatus`: `BORROWED` / `RETURNED` / `OVERDUE`
+- `OverdueProcessingStatus`: `PENDING` / `PROCESSED`
+- `OverdueHandleType`: `WARNING` / `COMPENSATION` / `CONTINUE`
+- `FreezeStatus`: `NORMAL` / `RESTRICTED` / `FROZEN`
+- `NotificationType`: `VERIFY_CODE` / `FIRST_APPROVAL_TODO` / `SECOND_APPROVAL_TODO` / `APPROVAL_PASSED` / `APPROVAL_REJECTED` / `APPROVAL_EXPIRED` / `RESERVATION_REMINDER` / `CHECKIN_TIMEOUT_WARNING` / `BORROW_CONFIRM_WARNING` / `OVERDUE_WARNING` / `REVIEW_TIMEOUT_WARNING` / `RESERVATION_CANCELLED` / `BATCH_RESERVATION_RESULT` / `ON_BEHALF_CREATED` / `PENDING_MANUAL_NOTICE` / `ACCOUNT_FREEZE_UNFREEZE` / `DEVICE_MAINTENANCE_NOTICE`
+- `NotificationChannel`: `IN_APP` / `EMAIL` / `SMS`
+- `NotificationStatus`: `PENDING` / `SENDING` / `SUCCESS` / `FAILED`
+- `AiIntentType`: `RESERVE` / `QUERY` / `CANCEL` / `HELP` / `UNKNOWN`
+- `PromptTemplateType`: `INTENT_RECOGNITION` / `INFO_EXTRACTION` / `RESULT_FEEDBACK` / `CONFLICT_RECOMMENDATION`
+- `StatisticsType`: `DEVICE_UTILIZATION` / `CATEGORY_UTILIZATION` / `USER_BORROW` / `TIME_DISTRIBUTION` / `OVERDUE_STAT`
+- `StatisticsGranularity`: `HOUR` / `DAY` / `WEEK` / `MONTH`
+- `StatisticsSubjectType`: `GLOBAL` / `DEVICE` / `USER` / `CATEGORY` / `TIME_SLOT`
+
+### 07-3 分域状态解释
+
+必须使用“状态集名 + 状态码”解释状态：
+
+- `reservation_status.PENDING_DEVICE_APPROVAL` = 待设备审批
+- `reservation_status.PENDING_SYSTEM_APPROVAL` = 待系统审批
+- `reservation_status.PENDING_MANUAL` = 待人工处理
+- `borrow_status.BORROWED` = 借用中（借还域）
+- `device_status.BORROWED` = 已借出（设备域）
+- `notification_status.PENDING` = 待发送（通知域）
+
+### 07-4 历史口径警告
+
+以下旧口径不得继续写入新代码、新测试和新文档：
+
+- `ADMIN` 单一管理员角色
+- 预约状态 `PENDING`
+- 通知渠道仅 `EMAIL` / `SMS`
+- 通知状态 `SENT`
+- 省略 `reservation_batch` 或 `password_history`
+
+---
+
+## 08 关键业务规则与定时任务
+
+### 08-1 预约、审批与签到规则
+
+- 预约开放时间默认 `08:00-22:00`
+- 最短预约时长 30 分钟，最长 7 天
+- `USER` 可本人单条预约与本人批量预约，`SYSTEM_ADMIN` 可代 `USER` 预约并可发起管理型批量预约，`DEVICE_ADMIN` 不可创建预约
+- 审批模式为 `DEVICE_ONLY` 时，预约初始状态进入 `PENDING_DEVICE_APPROVAL`
+- 审批模式为 `DEVICE_THEN_SYSTEM` 时，预约先经第一审，再进入 `PENDING_SYSTEM_APPROVAL`
+- 开始前超过 24 小时，用户可自行取消
+- 开始前 24 小时内到开始前，取消需管理员处理
+- 开始后不可取消
+- 签到窗口：开始前 30 分钟至开始后 30 分钟为正常签到；开始后 30 至 60 分钟为超时签到；超过 60 分钟未签到则预约过期
+- 用户签到后，设备管理员须在 2 小时内确认借用；超时进入 `PENDING_MANUAL`
+- 进入 `PENDING_MANUAL` 后 24 小时仍未处理，自动取消预约
+
+### 08-2 借还与设备状态规则
+
+- 只有 `DEVICE_ADMIN` 可确认借用与归还
+- 借用确认后生成 `borrow_record`
+- 归还确认后设备状态才可从 `BORROWED` 回到 `AVAILABLE`
+- 禁止通过手工更新绕过 `BORROWED -> AVAILABLE` 的归还流程
+- 设备进入 `DELETED` 后视为业务终态，历史记录必须保留
+
+### 08-3 逾期与冻结规则
+
+- 以 `borrow_record.expected_return_time` 作为逾期计算基准
+- 逾期 `< 4h`：预警但不记正式逾期天数
+- 逾期 `4h ~ 96h`：用户进入 `RESTRICTED`
+- 逾期 `>= 96h`：用户进入 `FROZEN`
+- `RESTRICTED` 可由系统自动解除；`FROZEN` 仅允许 `SYSTEM_ADMIN` 解除
+- 逾期处理记录需保留处理人、处理方式、备注、赔偿金额、通知状态
+
+### 08-4 通知规则
+
+- `IN_APP` 为正式通知渠道，支持已读 / 未读
+- `EMAIL` 为正式发送渠道，`SMS` 为预留扩展渠道
+- 通知记录必须保存 `channel`、`template_vars`、`status`、`retry_count`、`error_message`、`related_id`、`related_type`
+- 批量预约、代预约、审批流转、签到/借用超时、逾期、冻结/解冻、设备维修都应产生对应通知
+
+### 08-5 定时任务编号
+
+| 编号 | 任务 | Cron | 说明 |
+|------|------|------|------|
+| `C-01` | `ReservationAuditTimeoutReminder` | `0 0 * * * ?` | 48 小时审核超时提醒 |
+| `C-02` | `ReservationAutoExpireProcessor` | `0 15 * * * ?` | 72 小时未审核自动过期 |
+| `C-03` | `ReservationCheckInTimeoutProcessor` | `0 */15 * * * ?` | 签到超时处理 |
+| `C-04` | `BorrowConfirmTimeoutProcessor` | `0 */15 * * * ?` | 借用确认超时转人工处理 |
+| `C-05` | `OverdueAutoDetectProcessor` | `0 0 * * * ?` | 逾期自动识别 |
+| `C-06` | `OverdueNotificationProcessor` | `0 30 * * * ?` | 逾期通知发送 |
+| `C-07` | `OverdueRestrictionReleaseProcessor` | `0 0 2 * * ?` | 限制自动解除 |
+| `C-08` | `StatisticsAggregationProcessor` | `0 30 2 * * ?` | T+1 统计预聚合 |
+| `C-09` | `TokenCleanupProcessor` | `0 0 3 * * ?` | Token 清理 |
+| `C-10` | `SessionTimeoutProcessor` | `0 */10 * * * ?` | 会话空闲超时检查 |
+| `C-11` | `ReservationUpcomingReminder` | `0 */15 * * * ?` | 预约开始前 30 分钟提醒 |
+
+---
+
+## 09 与前端联动约定
+
+### 09-1 重点接口承载
+
+后端设计必须主动对齐前端以下模块：
+
+- `/api/auth/*`
+- `/api/admin/users/*`
+- `/api/admin/roles/*`
+- `/api/devices/*`
+- `/api/device-categories/*`
+- `/api/reservations/*`
+- `/api/reservation-batches/*`
+- `/api/borrow-records/*`
+- `/api/overdue-records/*`
+- `/api/notifications/*`
+- `/api/ai/*`
+- `/api/ai/prompts*`
+- `/api/statistics/*`
+
+### 09-2 当前联动说明
+
+- 前端目录稿已存在 `notifications` 模块与 `markAsRead` / `unreadCount` 承载，后端实现计划必须纳入通知查询与已读接口
+- API 附录当前仍缺少独立通知接口定义，落地实现时必须把通知接口同步回写到文档
+- Prompt 模板后端接口统一按 `/api/ai/prompts*`，不要误用前端页面路由 `/admin/prompt-templates`
+- 角色接口继续沿用 `/api/admin/roles/*`，即使旧 API 示例中仍存在 `ADMIN` 角色口径，也要按三角色实现
+
+---
+
+## 10 构建、测试与质量门禁
+
+### 10-1 Maven 常用命令
 
 | 命令 | 说明 |
 |------|------|
 | `mvn clean compile` | 清理并编译 |
 | `mvn clean test` | 运行全部测试 |
-| `mvn clean package` | 打包（默认会跑测试） |
+| `mvn clean package` | 打包（默认跑测试） |
 | `mvn clean package -DskipTests` | 跳过测试打包 |
 | `mvn clean verify` | 执行完整校验流程 |
 | `mvn spring-boot:run` | 本地启动服务 |
 
-### 04-2 运行单个测试
+### 10-2 测试层次要求
 
-```bash
-# 单个测试类
-mvn test -Dtest=DeviceServiceTest
+- 单元测试：校验业务规则、状态机、校验器、工具类、AI 解析器
+- 集成测试：覆盖 Controller、鉴权链、事务、Mapper 与定时任务
+- 核心链路必须覆盖成功与失败路径：
+  - 注册 / 登录 / Token 刷新 / 密码重置 / 个人信息修改
+  - 用户状态更新 / 角色分配 / 冻结解冻
+  - 预约冲突检测 / 一审 / 二审 / 代预约 / 批量预约 / 签到 / 人工处理
+  - 借用确认 / 归还确认 / 设备状态联动
+  - 逾期识别 / 限制解除 / 通知发送 / 通知已读
+  - AI 调用与降级
+  - 统计预聚合与排名查询
 
-# 单个测试方法
-mvn test -Dtest=DeviceServiceTest#testCreateDevice
+### 10-3 质量门禁
 
-# 多个测试类
-mvn test -Dtest=DeviceServiceTest,ReservationServiceTest
-```
-
-### 04-3 分层测试建议
-
-```bash
-# 仅单元测试（按包名）
-mvn test -Dtest=unit.*
-
-# 仅集成测试（按命名）
-mvn test -Dtest=*IT,*IntegrationTest
-```
-
-### 04-4 质量检查
-
-```bash
-mvn checkstyle:check
-mvn spotbugs:check
-```
+- 每完成一个阶段或模块，必须做代码审查
+- 准备宣称“完成”前，必须执行验证命令并核对结果
+- 若变更涉及 schema、接口或业务规则，必须同步更新文档后才可视为完成
 
 ---
 
-## 05 目录结构
+## 11 命名规范
 
-### 05-1 项目结构概览
-
-```
-device-management-backend/
-│
-├── src/main/java/com/jhu/device/management/
-│   │
-│   ├── DeviceManagementApplication.java          # 应用启动类
-│   │
-│   ├── config/                                   # 配置模块
-│   │   ├── AppConfig.java                       # 应用配置
-│   │   ├── RedisConfig.java                     # Redis配置
-│   │   ├── AsyncConfig.java                      # 异步任务配置
-│   │   ├── WebConfig.java                       # Web配置（CORS等）
-│   │   ├── ThreadPoolConfig.java                # 线程池配置
-│   │   │
-│   │   ├── security/                            # 安全配置
-│   │   │   ├── SecurityConfig.java              # Spring Security配置
-│   │   │   ├── JwtConfig.java                   # JWT配置
-│   │   │   ├── JwtAuthenticationFilter.java    # JWT认证过滤器
-│   │   │   ├── JwtAuthenticationEntryPoint.java # JWT认证失败处理
-│   │   │   └── AccessDeniedHandlerImpl.java     # 权限不足处理
-│   │   │
-│   │   ├── mybatis/                             # MyBatis配置
-│   │   │   ├── MybatisPlusConfig.java           # MyBatis-Plus配置
-│   │   │   └── PaginationInterceptor.java       # 分页插件配置
-│   │   │
-│   │   ├── ai/                                  # AI配置
-│   │   │   ├── AiConfig.java                   # AI服务配置
-│   │   │   └── PromptConfig.java                # Prompt模板配置
-│   │   │
-│   │   └── email/                               # 邮件配置
-│   │       └── EmailConfig.java                 # SMTP邮件配置
-│   │
-│   ├── common/                                  # 通用模块
-│   │   ├── exception/                           # 异常类
-│   │   ├── response/                            # 响应类
-│   │   ├── constant/                            # 常量类
-│   │   ├── annotation/                          # 自定义注解
-│   │   ├── aspect/                             # AOP切面
-│   │   ├── entity/                              # 实体基类
-│   │   └── enums/                               # 通用枚举
-│   │
-│   ├── dto/                                    # 数据传输对象
-│   │   ├── auth/                               # 认证DTO
-│   │   ├── user/                               # 用户DTO
-│   │   ├── device/                             # 设备DTO
-│   │   ├── category/                           # 分类DTO
-│   │   ├── reservation/                        # 预约DTO
-│   │   ├── borrow/                             # 借还DTO
-│   │   ├── overdue/                            # 逾期DTO
-│   │   ├── ai/                                 # AI对话DTO
-│   │   ├── notification/                       # 通知DTO
-│   │   └── statistics/                         # 统计DTO
-│   │
-│   ├── entity/                                 # 实体类
-│   │
-│   ├── mapper/                                 # 数据访问层
-│   │
-│   ├── service/                                # 业务逻辑层
-│   │   ├── impl/                              # 服务实现层
-│   │   └── support/                           # 服务辅助组件
-│   │
-│   ├── controller/                           # 控制层
-│   │
-│   ├── scheduler/                            # 定时任务
-│   │
-│   └── util/                                 # 工具类
-│
-├── src/main/resources/
-│   ├── mapper/                              # MyBatis XML映射文件
-│   ├── templates/                          # 模板文件
-│   │   ├── email/                          # 邮件模板
-│   │   └── ai/                             # AI提示词模板
-│   ├── application.yml                     # 主配置文件
-│   ├── application-dev.yml                 # 开发环境配置
-│   ├── application-prod.yml                # 生产环境配置
-│   ├── application-test.yml                # 测试环境配置
-│   └── logback-spring.xml                  # 日志配置
-│
-├── src/test/java/com/jhu/device/management/
-│   ├── unit/                                # 单元测试
-│   └── integration/                          # 集成测试
-│
-├── pom.xml                                 # Maven配置文件
-├── Dockerfile                              # Docker构建文件
-├── docker-compose.yml                      # Docker Compose配置
-└── README.md                               # 项目说明
-```
-
-### 05-2 目录结构设计原则
-
-#### Service 层组织
-
-- **接口**：统一放在 `service/` 目录下
-- **实现**：统一放在 `service/impl/` 目录下
-- **支撑类**：放在 `service/support/` 目录下（如校验器、检测器、客户端等）
-
-#### Common 模块组织
-
-- **exception/**：异常相关类（全局异常处理器、异常基类、业务异常等）
-- **response/**：响应相关类（统一响应结果、分页响应等）
-- **constant/**：常量类（应用常量、Redis 键常量、错误码常量等）
-- **annotation/**：自定义注解
-- **aspect/**：AOP 切面
-- **entity/**：实体基类
-- **enums/**：通用枚举
-
----
-
-## 06 模块详细说明
-
-### 06-1 Controller 层
-
-| Controller | 路径前缀 | 功能说明 |
-|------------|----------|----------|
-| AuthController | /api/auth | 登录、注册、Token刷新、密码找回、登出、验证码发送 |
-| UserController | /api/admin/users | 用户管理、冻结解冻、权限分配 |
-| DeviceController | /api/devices | 设备管理、图片上传 |
-| CategoryController | /api/device-categories | 设备分类管理 |
-| ReservationController | /api/reservations | 预约管理、签到、审核、人工处理、冲突检测 |
-| BorrowController | /api/borrow-records | 借还管理 |
-| OverdueController | /api/overdue-records | 逾期管理 |
-| AiController | /api/ai | AI对话、提示模板管理 |
-| StatisticsController | /api/statistics | 统计分析 |
-
-### 06-2 Service 层
-
-| Service | 说明 | 主要业务逻辑 |
-|---------|------|--------------|
-| AuthService | 认证服务 | 登录、注册、Token管理、验证码、密码重置 |
-| UserService | 用户服务 | 用户CRUD、权限管理、冻结解冻 |
-| DeviceService | 设备服务 | 设备CRUD、状态管理、图片上传、状态变更记录 |
-| CategoryService | 分类服务 | 分类CRUD、二级分类管理 |
-| ReservationService | 预约服务 | 预约创建、审核、签到、冲突检测、人工处理 |
-| BorrowService | 借还服务 | 借用确认、归还确认、历史记录 |
-| OverdueService | 逾期服务 | 逾期识别、处理、统计 |
-| AiService | AI服务 | 对话、意图识别、槽位提取 |
-| PromptTemplateService | 提示模板服务 | 模板CRUD、模板变量管理 |
-| StatisticsService | 统计服务 | 数据统计、预聚合 |
-| NotificationService | 通知服务 | 邮件发送、短信发送 |
-
-### 06-3 定时任务
-
-#### 06-3-1 预约管理相关
-
-| 任务 | Cron | 功能 | 任务编号 |
-|------|------|------|----------|
-| ReservationAuditTimeoutReminder | `0 0 * * * ?` | 审核超时提醒 | C-01 |
-| ReservationAutoExpireProcessor | `0 15 * * * ?` | 预约自动过期 | C-02 |
-| ReservationCheckInTimeoutProcessor | `0 */15 * * * ?` | 签到超时处理 | C-03 |
-| BorrowConfirmTimeoutProcessor | `0 */15 * * * ?` | 借用确认超时 | C-04 |
-| ReservationUpcomingReminder | `0 */15 * * * ?` | 即将开始提醒 | C-11 |
-
-#### 06-3-2 逾期管理相关
-
-| 任务 | Cron | 功能 | 任务编号 |
-|------|------|------|----------|
-| OverdueAutoDetectProcessor | `0 0 * * * ?` | 逾期自动识别 | C-05 |
-| OverdueNotificationProcessor | `0 30 * * * ?` | 逾期通知发送 | C-06 |
-| OverdueRestrictionReleaseProcessor | `0 0 2 * * ?` | 限制自动解除 | C-07 |
-
-#### 06-3-3 统计分析相关
-
-| 任务 | Cron | 功能 | 任务编号 |
-|------|------|------|----------|
-| StatisticsAggregationProcessor | `0 30 2 * * ?` | 统计数据预聚合 | C-08 |
-
-#### 06-3-4 系统运维相关
-
-| 任务 | Cron | 功能 | 任务编号 |
-|------|------|------|----------|
-| TokenCleanupProcessor | `0 0 3 * * ?` | Token过期清理 | C-09 |
-| SessionTimeoutProcessor | `0 */10 * * * ?` | 会话空闲超时 | C-10 |
-
-### 06-4 数据库表对应
-
-| Entity | 对应表 | 说明 |
-|--------|--------|------|
-| User | user | 用户表 |
-| Role | role | 角色表 |
-| Permission | permission | 权限表 |
-| RolePermission | role_permission | 角色权限关联表 |
-| Device | device | 设备表 |
-| DeviceCategory | device_category | 设备分类表 |
-| DeviceStatusChangeLog | device_status_log | 设备状态变更记录表 |
-| Reservation | reservation | 预约表 |
-| BorrowRecord | borrow_record | 借还记录表 |
-| OverdueRecord | overdue_record | 逾期记录表 |
-| ChatHistory | chat_history | AI对话历史表 |
-| PromptTemplate | prompt_template | AI提示模板表 |
-| NotificationRecord | notification_record | 通知记录表 |
-| StatisticsDaily | statistics_daily | 统计数据聚合表 |
-
-### 06-5 枚举类说明
-
-#### 06-5-1 设备状态（DeviceStatus）
-
-| 状态 | 说明 |
-|------|------|
-| AVAILABLE | 可用 |
-| BORROWED | 已借出 |
-| MAINTENANCE | 维护中 |
-| DISABLED | 已禁用 |
-| DELETED | 已删除 |
-
-#### 06-5-2 预约状态（ReservationStatus）
-
-| 状态 | 说明 |
-|------|------|
-| PENDING | 待审核（自动审核通过） |
-| PENDING_MANUAL | 待人工审核 |
-| APPROVED | 已通过 |
-| REJECTED | 已拒绝 |
-| CANCELLED | 已取消 |
-| EXPIRED | 已过期 |
-
-#### 06-5-3 签到状态（CheckInStatus）
-
-| 状态 | 说明 |
-|------|------|
-| NOT_CHECKED_IN | 未签到 |
-| CHECKED_IN | 已签到 |
-| CHECKED_IN_TIMEOUT | 签到超时 |
-
-#### 06-5-4 冻结状态（FreezeStatus）
-
-| 状态 | 说明 |
-|------|------|
-| NORMAL | 正常 |
-| RESTRICTED | 受限（逾期导致） |
-| FROZEN | 冻结（管理员操作） |
-
-#### 06-5-5 通知类型（NotificationType）
-
-| 类型 | 说明 | 接收者 |
-|------|------|--------|
-| VERIFY_CODE | 验证码 | 用户 |
-| APPROVAL_PASSED | 审核通过 | 用户 |
-| APPROVAL_REJECTED | 审核拒绝 | 用户 |
-| RESERVATION_REMINDER | 预约提醒 | 用户 |
-| CHECKIN_TIMEOUT_WARNING | 签到超时预警 | 用户 |
-| BORROW_CONFIRM_WARNING | 借用确认预警 | 管理员 |
-| OVERDUE_WARNING | 逾期提醒 | 用户 |
-| REVIEW_TIMEOUT_WARNING | 审核超时提醒 | 管理员 |
-| RESERVATION_CANCELLED | 预约取消 | 用户 |
-| ACCOUNT_FREEZE_UNFREEZE | 冻结/解冻 | 用户 |
-
-#### 06-5-6 通知状态（NotificationStatus）
-
-| 状态 | 说明 |
-|------|------|
-| PENDING | 待发送 |
-| SENDING | 发送中 |
-| SUCCESS | 发送成功 |
-| FAILED | 发送失败 |
-
----
-
-## 07 配置文件说明
-
-### 07-1 application.yml 核心配置
-
-```yaml
-server:
-  port: 8080
-
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/device_management
-    username: root
-    password: ${DB_PASSWORD}
-  redis:
-    host: localhost
-    port: 6379
-    password: ${REDIS_PASSWORD}
-  mail:
-    host: smtp.example.com
-    username: ${MAIL_USERNAME}
-    password: ${MAIL_PASSWORD}
-
-jwt:
-  secret: ${JWT_SECRET}
-  access-token-validity: 86400   # 24小时
-  refresh-token-validity: 604800 # 7天
-
-ai:
-  provider: qianwen
-  api-key: ${AI_API_KEY}
-  model: qwen-turbo
-  timeout: 10000
-
-device:
-  upload:
-    path: /data/uploads
-    max-size: 2MB
-
-# 验证码配置
-verification:
-  code:
-    expire-minutes: 15
-    max-attempts: 5
-    daily-limit-per-email: 3
-    hourly-limit-per-ip: 5
-
-# 预约配置
-reservation:
-  open-hours: "08:00-22:00"
-  min-duration-minutes: 30
-  max-duration-days: 7
-  cancel-free-hours: 24
-
-# 逾期配置
-overdue:
-  detection-cron: "0 0 * * * ?"
-  restriction-days: 7
-```
-
-### 07-2 Redis 键设计
-
-| 键前缀 | 说明 | 示例 |
-|--------|------|------|
-| token:access: | Access Token | token:access:user_uuid |
-| token:refresh: | Refresh Token | token:refresh:user_uuid |
-| verify:code: | 验证码 | verify:code:email |
-| reservation:lock: | 预约锁 | reservation:lock:device_id:time |
-| session:last: | 最后活跃时间 | session:last:user_id |
-
----
-
-## 08 命名规范
-
-### 08-1 类命名规范
+### 11-1 类与接口命名
 
 | 类型 | 命名规范 | 示例 |
 |------|----------|------|
-| 实体类 | 名词，PascalCase | `User`, `Device`, `Reservation` |
-| Service接口 | 名词+Service | `UserService`, `DeviceService` |
-| Service实现 | 接口名+Impl | `UserServiceImpl`, `DeviceServiceImpl` |
-| Controller | 名词+Controller | `UserController`, `DeviceController` |
-| Mapper | 实体名+Mapper | `UserMapper`, `DeviceMapper` |
-| DTO请求 | 动词+名词+Request | `CreateUserRequest`, `UpdateDeviceRequest` |
-| DTO响应 | 名词+Response | `UserResponse`, `DeviceResponse` |
-| 常量类 | 名词+Constants 或 UPPER_SNAKE_CASE | `RedisKeyConstants`, `ErrorConstants` |
-| 工具类 | 名词+Util | `JwtUtil`, `DateUtil` |
-| 异常类 | 名词+Exception | `BusinessException`, `AuthException` |
+| 实体类 | 名词，PascalCase | `User`、`Device` |
+| Service 接口 | 名词 + `Service` | `UserService` |
+| Service 实现 | 接口名 + `Impl` | `UserServiceImpl` |
+| Controller | 名词 + `Controller` | `DeviceController` |
+| Mapper | 实体名 + `Mapper` | `ReservationMapper` |
+| 请求 DTO | 动作 + 实体 + `Request` | `CreateReservationRequest` |
+| 响应 DTO | 实体 + `Response` | `BorrowResponse` |
+| 工具类 | 名词 + `Util` | `JwtUtil` |
+| 常量类 | 名词 + `Constants` | `RedisKeyConstants` |
 
-### 08-2 DTO 命名规范
+### 11-2 模块术语规范
 
-| 操作类型 | 命名格式 | 示例 |
-|----------|----------|------|
-| 创建 | Create+实体名+Request | `CreateUserRequest` |
-| 更新 | Update+实体名+Request | `UpdateUserRequest` |
-| 查询 | Query+实体名+Request | `QueryDeviceRequest` |
-| 删除 | Delete+实体名+Request | `DeleteReservationRequest` |
-| 动作 | 动作+实体名+Request | `FreezeUserRequest`, `ConfirmBorrowRequest` |
-| 响应 | 实体名+Response | `UserResponse`, `DeviceResponse` |
+统一使用以下业务术语：
 
----
-
-## 09 与前端接口对应关系
-
-| 前端路由 | 后端Controller | 接口路径 |
-|----------|----------------|----------|
-| /login | AuthController | POST /api/auth/login |
-| /register | AuthController | POST /api/auth/register |
-| /forgot-password | AuthController | POST /api/auth/send-verification-code |
-| /reset-password | AuthController | POST /api/auth/reset-password |
-| /logout | AuthController | POST /api/auth/logout |
-| /devices | DeviceController | GET/POST /api/devices |
-| /reservations | ReservationController | GET/POST /api/reservations |
-| /reservations/:id/check-in | ReservationController | POST /api/reservations/{id}/check-in |
-| /reservations/:id/manual-process | ReservationController | POST /api/reservations/{id}/manual-process |
-| /borrows/confirm | BorrowController | POST /api/borrow-records/{reservationId}/borrow |
-| /borrows/return | BorrowController | POST /api/borrow-records/{id}/return |
-| /ai/chat | AiController | POST /api/ai/chat |
-| /statistics | StatisticsController | GET /api/statistics/overview |
+- 用户与权限管理
+- 设备管理
+- 预约管理
+- 预约批次 / 批量预约
+- 借还管理
+- 逾期管理
+- 智能对话预约（预留语音扩展）
+- 统计分析
+- 消息通知
 
 ---
 
-## 附录：详细目录清单
+## 12 Agent 执行提醒
 
-### config/ 目录
-
-| 文件 | 说明 |
-|------|------|
-| AppConfig.java | 应用配置 |
-| RedisConfig.java | Redis配置 |
-| AsyncConfig.java | 异步任务配置 |
-| WebConfig.java | Web配置（CORS等） |
-| ThreadPoolConfig.java | 线程池配置 |
-
-#### security/ 子目录
-
-| 文件 | 说明 |
-|------|------|
-| SecurityConfig.java | Spring Security配置 |
-| JwtConfig.java | JWT配置 |
-| JwtAuthenticationFilter.java | JWT认证过滤器 |
-| JwtAuthenticationEntryPoint.java | JWT认证失败处理 |
-| AccessDeniedHandlerImpl.java | 权限不足处理 |
-
-#### mybatis/ 子目录
-
-| 文件 | 说明 |
-|------|------|
-| MybatisPlusConfig.java | MyBatis-Plus配置 |
-| PaginationInterceptor.java | 分页插件配置 |
-
-#### ai/ 子目录
-
-| 文件 | 说明 |
-|------|------|
-| AiConfig.java | AI服务配置 |
-| PromptConfig.java | Prompt模板配置 |
-
-#### email/ 子目录
-
-| 文件 | 说明 |
-|------|------|
-| EmailConfig.java | SMTP邮件配置 |
-
-### dto/ 目录
-
-#### auth/
-
-| 文件 | 说明 |
-|------|------|
-| LoginRequest.java | 登录请求 |
-| RegisterRequest.java | 注册请求 |
-| RefreshTokenRequest.java | 刷新Token请求 |
-| SendVerificationCodeRequest.java | 发送验证码请求 |
-| ResetPasswordRequest.java | 重置密码请求 |
-| LoginResponse.java | 登录响应 |
-| VerificationCodeResponse.java | 验证码响应 |
-| ResetTokenResponse.java | 重置令牌响应 |
-
-#### user/
-
-| 文件 | 说明 |
-|------|------|
-| CreateUserRequest.java | 创建用户请求 |
-| UpdateUserRequest.java | 更新用户请求 |
-| QueryUserRequest.java | 用户查询请求 |
-| UserResponse.java | 用户响应 |
-| FreezeUserRequest.java | 用户冻结请求 |
-| UnfreezeUserRequest.java | 用户解冻请求 |
-| AssignPermissionRequest.java | 权限分配请求 |
-
-#### device/
-
-| 文件 | 说明 |
-|------|------|
-| CreateDeviceRequest.java | 创建设备请求 |
-| UpdateDeviceRequest.java | 更新设备请求 |
-| QueryDeviceRequest.java | 设备查询请求 |
-| DeviceResponse.java | 设备响应 |
-
-#### category/
-
-| 文件 | 说明 |
-|------|------|
-| CreateCategoryRequest.java | 创建分类请求 |
-| UpdateCategoryRequest.java | 更新分类请求 |
-| QueryCategoryRequest.java | 分类查询请求 |
-| CategoryResponse.java | 分类响应 |
-
-#### reservation/
-
-| 文件 | 说明 |
-|------|------|
-| CreateReservationRequest.java | 创建预约请求 |
-| UpdateReservationRequest.java | 更新预约请求 |
-| QueryReservationRequest.java | 预约查询请求 |
-| ReservationResponse.java | 预约响应 |
-| AuditReservationRequest.java | 预约审核请求 |
-| CheckInRequest.java | 签到请求 |
-| ManualProcessRequest.java | 人工处理请求 |
-| ConflictCheckResponse.java | 冲突检测响应 |
-
-#### borrow/
-
-| 文件 | 说明 |
-|------|------|
-| ConfirmBorrowRequest.java | 借用确认请求 |
-| ReturnBorrowRequest.java | 归还确认请求 |
-| QueryBorrowRequest.java | 借还查询请求 |
-| BorrowResponse.java | 借还响应 |
-
-#### overdue/
-
-| 文件 | 说明 |
-|------|------|
-| HandleOverdueRequest.java | 逾期处理请求 |
-| QueryOverdueRequest.java | 逾期查询请求 |
-| OverdueResponse.java | 逾期响应 |
-| OverdueStatisticsResponse.java | 逾期统计响应 |
-
-#### ai/
-
-| 文件 | 说明 |
-|------|------|
-| AiChatRequest.java | AI对话请求 |
-| AiChatResponse.java | AI对话响应 |
-| AiIntentResult.java | 意图识别结果 |
-| AiSlotInfo.java | 槽位信息 |
-| CreatePromptTemplateRequest.java | 创建提示模板请求 |
-| UpdatePromptTemplateRequest.java | 更新提示模板请求 |
-| PromptTemplateResponse.java | 提示模板响应 |
-
-#### notification/
-
-| 文件 | 说明 |
-|------|------|
-| NotificationResponse.java | 通知响应DTO |
-
-#### statistics/
-
-| 文件 | 说明 |
-|------|------|
-| QueryStatisticsRequest.java | 统计查询请求 |
-| OverviewResponse.java | 统计概览响应 |
-| DeviceUsageResponse.java | 设备利用率响应 |
-| BorrowStatsResponse.java | 借用统计响应 |
-| HotTimeSlotResponse.java | 热门时段响应 |
-
-### scheduler/ 目录
-
-#### reservation/
-
-| 文件 | 说明 |
-|------|------|
-| ReservationAuditTimeoutReminder.java | 审核超时提醒 |
-| ReservationAutoExpireProcessor.java | 预约自动过期 |
-| ReservationCheckInTimeoutProcessor.java | 签到超时处理 |
-| BorrowConfirmTimeoutProcessor.java | 借用确认超时 |
-| ReservationUpcomingReminder.java | 即将开始提醒 |
-
-#### overdue/
-
-| 文件 | 说明 |
-|------|------|
-| OverdueAutoDetectProcessor.java | 逾期自动识别 |
-| OverdueNotificationProcessor.java | 逾期通知发送 |
-| OverdueRestrictionReleaseProcessor.java | 限制自动解除 |
-
-#### statistics/
-
-| 文件 | 说明 |
-|------|------|
-| StatisticsAggregationProcessor.java | 统计数据预聚合 |
-
-#### system/
-
-| 文件 | 说明 |
-|------|------|
-| TokenCleanupProcessor.java | Token过期清理 |
-| SessionTimeoutProcessor.java | 会话超时检查 |
-
-### service/support/ 目录
-
-| 文件 | 说明 |
-|------|------|
-| ReservationValidator.java | 预约校验器 |
-| ConflictDetector.java | 冲突检测器 |
-| IntentRecognizer.java | 意图识别器 |
-| SlotExtractor.java | 槽位提取器 |
-| PromptEngine.java | Prompt引擎 |
-| LlmClient.java | LLM客户端接口 |
-| LlmClientImpl.java | LLM客户端实现 |
-| EmailSender.java | 邮件发送器 |
-| SmsSender.java | 短信发送器（预留） |
-| NotificationTemplate.java | 通知模板 |
+- 开发前优先核对当前仓库状态与文档真相源，不要只根据旧计划文件推断实现细节
+- 发现包名、文件名、表结构、状态枚举不一致时，先比对 SQL 与系统设计，再决定是否修文档或修代码
+- 对于 `String` UUID、固定三角色、审批模式、预约状态、通知类型、通知渠道、定时任务编号，不要擅自改口径
+- 若旧文档仍出现 `ADMIN`、`PENDING`、`SENT` 等历史口径，默认视为待同步旧内容，不作为新实现基线
+- 如果为了支持前端页面新增接口、字段或枚举，必须同时说明影响到哪些页面、哪些后端模块、哪些文档
+- 若开始实际编码，优先先把 `pom.xml`、配置骨架、安全基线和 SQL 脚本对齐，再进入业务模块开发
