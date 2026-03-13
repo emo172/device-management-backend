@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.ReservationMapper">
+
+    <!--
+        查询同设备同时间段内的有效预约。
+        仅统计仍会占用时间段的预约状态，已拒绝、已取消、已过期记录不会阻塞新的预约创建。
+    -->
+    <select id="findConflictingReservations" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE device_id = #{deviceId}
+          AND status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
+          AND start_time &lt; #{endTime}
+          AND end_time &gt; #{startTime}
+    </select>
+</mapper>

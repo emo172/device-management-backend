@@ -116,3 +116,45 @@ CREATE TABLE device_status_log (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_dsl_device_id FOREIGN KEY (device_id) REFERENCES device (id)
 );
+
+CREATE TABLE reservation_batch (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    batch_no VARCHAR(50),
+    created_by VARCHAR(36),
+    reservation_count INT DEFAULT 0,
+    success_count INT DEFAULT 0,
+    failed_count INT DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'PROCESSING',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE reservation (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    batch_id VARCHAR(36),
+    user_id VARCHAR(36) NOT NULL,
+    created_by VARCHAR(36) NOT NULL,
+    reservation_mode VARCHAR(20) NOT NULL DEFAULT 'SELF',
+    device_id VARCHAR(36) NOT NULL,
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP NOT NULL,
+    purpose VARCHAR(500) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING_DEVICE_APPROVAL',
+    approval_mode_snapshot VARCHAR(20) NOT NULL,
+    remark VARCHAR(1000),
+    device_approver_id VARCHAR(36),
+    device_approved_at TIMESTAMP,
+    device_approval_remark VARCHAR(500),
+    system_approver_id VARCHAR(36),
+    system_approved_at TIMESTAMP,
+    system_approval_remark VARCHAR(500),
+    sign_status VARCHAR(20) NOT NULL DEFAULT 'NOT_CHECKED_IN',
+    checked_in_at TIMESTAMP,
+    cancel_reason VARCHAR(500),
+    cancel_time TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_reservation_user_id FOREIGN KEY (user_id) REFERENCES `user` (id),
+    CONSTRAINT fk_reservation_created_by FOREIGN KEY (created_by) REFERENCES `user` (id),
+    CONSTRAINT fk_reservation_device_id FOREIGN KEY (device_id) REFERENCES device (id)
+);

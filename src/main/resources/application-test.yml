@@ -19,3 +19,7 @@ spring:
       mode: always
       schema-locations: classpath:testdb/task3-schema.sql
       data-locations: classpath:testdb/task3-data.sql
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
