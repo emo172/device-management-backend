@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.DeviceStatusLogMapper">
+
+    <!-- 按设备查询状态日志，按时间倒序返回以便设备详情页优先展示最近状态。 -->
+    <select id="findByDeviceId" resultType="com.jhun.backend.entity.DeviceStatusLog">
+        SELECT id, device_id, old_status, new_status, reason, operator_id, created_at
+        FROM device_status_log
+        WHERE device_id = #{deviceId}
+        ORDER BY created_at DESC
+    </select>
+</mapper>
