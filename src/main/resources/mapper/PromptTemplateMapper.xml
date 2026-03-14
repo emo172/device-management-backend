@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.PromptTemplateMapper">
+
+    <!--
+        查询模板列表。
+        后台运维页需要先看到最近更新且当前启用状态明显的模板，因此按启用状态和更新时间排序。
+    -->
+    <select id="findAllTemplates" resultType="com.jhun.backend.entity.PromptTemplate">
+        SELECT id,
+               name,
+               code,
+               content,
+               type,
+               description,
+               variables,
+               is_active,
+               version,
+               created_at,
+               updated_at
+        FROM prompt_template
+        ORDER BY is_active DESC, updated_at DESC, created_at DESC
+    </select>
+
+    <!--
+        查询某一类型下全部启用模板。
+        运行时需要先检测是否存在多条启用模板的脏数据，因此这里故意返回全量命中结果，
+        由调用方决定是正常读取、返回空，还是对多条记录执行 fail-fast。
+    -->
+    <select id="findActiveByType" resultType="com.jhun.backend.entity.PromptTemplate">
+        SELECT id,
+               name,
+               code,
+               content,
+               type,
+               description,
+               variables,
+               is_active,
+               version,
+               created_at,
+               updated_at
+        FROM prompt_template
+        WHERE type = #{type}
+          AND is_active = 1
+        ORDER BY updated_at DESC, created_at DESC
+    </select>
+
+    <!-- 根据模板代码查询模板，供创建与更新前做唯一性校验。 -->
+    <select id="findByCode" resultType="com.jhun.backend.entity.PromptTemplate">
+        SELECT id,
+               name,
+               code,
+               content,
+               type,
+               description,
+               variables,
+               is_active,
+               version,
+               created_at,
+               updated_at
+        FROM prompt_template
+        WHERE code = #{code}
+        LIMIT 1
+    </select>
+
+    <!-- 根据模板名称查询模板，避免后台维护时出现重名记录。 -->
+    <select id="findByName" resultType="com.jhun.backend.entity.PromptTemplate">
+        SELECT id,
+               name,
+               code,
+               content,
+               type,
+               description,
+               variables,
+               is_active,
+               version,
+               created_at,
+               updated_at
+        FROM prompt_template
+        WHERE name = #{name}
+        LIMIT 1
+    </select>
+</mapper>
