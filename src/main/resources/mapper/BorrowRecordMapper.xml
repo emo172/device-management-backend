@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.BorrowRecordMapper">
+
+    <!-- 按预约查询唯一借还记录，用于借用确认幂等校验和归还前定位业务记录。 -->
+    <select id="findByReservationId" resultType="com.jhun.backend.entity.BorrowRecord">
+        SELECT id, reservation_id, device_id, user_id, borrow_time, return_time, expected_return_time, status,
+               borrow_check_status, return_check_status, remark, operator_id, return_operator_id, created_at, updated_at
+        FROM borrow_record
+        WHERE reservation_id = #{reservationId}
+        LIMIT 1
+    </select>
+
+    <!--
+        查询借还记录列表。
+        当 userId 传入时，仅返回该用户本人记录，用于普通用户“只能查看本人记录”的边界；
+        当 userId 为空时，返回管理端可见的全部记录。
+    -->
+    <select id="findPageByConditions" resultType="com.jhun.backend.entity.BorrowRecord">
+        SELECT id, reservation_id, device_id, user_id, borrow_time, return_time, expected_return_time, status,
+               borrow_check_status, return_check_status, remark, operator_id, return_operator_id, created_at, updated_at
+        FROM borrow_record
+        WHERE 1 = 1
+          <if test="status != null and status != ''">
+              AND status = #{status}
+          </if>
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+        ORDER BY borrow_time DESC, created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 统计借还记录总数，避免分页接口先全量查出再在内存中切片。 -->
+    <select id="countByConditions" resultType="long">
+        SELECT COUNT(*)
+        FROM borrow_record
+        WHERE 1 = 1
+          <if test="status != null and status != ''">
+              AND status = #{status}
+          </if>
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+    </select>
+
+    <!--
+        仅当记录仍处于借出/逾期且未归还时才允许写入归还结果，
+        通过受影响行数作为 CAS 信号，避免并发重复归还导致状态日志与设备状态重复写入。
+    -->
+    <update id="updateReturnIfInBorrowedState">
+        UPDATE borrow_record
+        SET return_time = #{returnTime},
+            return_check_status = #{returnCheckStatus},
+            remark = #{remark},
+            return_operator_id = #{returnOperatorId},
+            status = 'RETURNED',
+            updated_at = #{updatedAt}
+        WHERE id = #{id}
+          AND status IN ('BORROWED', 'OVERDUE')
+          AND return_time IS NULL
+    </update>
+</mapper>

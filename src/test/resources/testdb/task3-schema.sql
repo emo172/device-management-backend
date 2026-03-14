@@ -158,3 +158,27 @@ CREATE TABLE reservation (
     CONSTRAINT fk_reservation_created_by FOREIGN KEY (created_by) REFERENCES `user` (id),
     CONSTRAINT fk_reservation_device_id FOREIGN KEY (device_id) REFERENCES device (id)
 );
+
+CREATE TABLE borrow_record (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    reservation_id VARCHAR(36) NOT NULL,
+    device_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    borrow_time TIMESTAMP NOT NULL,
+    return_time TIMESTAMP,
+    expected_return_time TIMESTAMP NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'BORROWED',
+    borrow_check_status CLOB,
+    return_check_status CLOB,
+    remark CLOB,
+    operator_id VARCHAR(36) NOT NULL,
+    return_operator_id VARCHAR(36),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_borrow_reservation_id UNIQUE (reservation_id),
+    CONSTRAINT fk_borrow_reservation_id FOREIGN KEY (reservation_id) REFERENCES reservation (id),
+    CONSTRAINT fk_borrow_device_id FOREIGN KEY (device_id) REFERENCES device (id),
+    CONSTRAINT fk_borrow_user_id FOREIGN KEY (user_id) REFERENCES `user` (id),
+    CONSTRAINT fk_borrow_operator_id FOREIGN KEY (operator_id) REFERENCES `user` (id),
+    CONSTRAINT fk_borrow_return_operator_id FOREIGN KEY (return_operator_id) REFERENCES `user` (id)
+);
