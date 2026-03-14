@@ -841,6 +841,14 @@ git commit -m "feat(reservation): add reservation approval workflow and concurre
 - [ ] **Step 4: 补齐 `README.md`、`Dockerfile`、`docker-compose.yml`、`logback-spring.xml`，并把通知接口与 SQL 新口径同步回写到文档**
 - [ ] **Step 5: 执行 `mvn clean verify`，通过后提交建议 `feat(statistics): add aggregation ranking APIs and release assets`**
 
+### 2.14 Task 14 实施回写（2026-03-14）
+
+- 已先写失败测试：`StatisticsControllerIntegrationTest`、`EndToEndSmokeIntegrationTest`
+- 已执行 `mvn -Dtest=StatisticsControllerIntegrationTest,EndToEndSmokeIntegrationTest test`，初次失败原因为统计控制器缺失、`statisticsAggregationProcessor` Bean 不存在
+- 已实现 `statistics_daily` 聚合链路、`/api/statistics/*` 接口、`C-08` 统计预聚合任务和发布骨架文件
+- 已同步 README、Docker、日志配置，并把通知接口家族与统计接口家族按 SQL 新口径回写到文档
+- 若后续继续扩展统计范围，应继续坚持“查询层只读 `statistics_daily`，业务事实表只由聚合任务扫描”的边界
+
 ## 3. 文档缺口处理策略
 
 以下事项在执行计划时必须显式处理，不允许静默跳过：

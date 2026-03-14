@@ -194,6 +194,14 @@
 - 把三角色与双审批模型回写到系统设计与术语文档
 - 把 `reservation_batch`、`IN_APP`、`read_flag`、`read_at` 回写到后端目录稿和相关附录说明
 - 把 Prompt 模板接口统一回写为 `/api/ai/prompts*`
+- 把统计接口补齐为 `/api/statistics/overview`、`/api/statistics/device-utilization`、`/api/statistics/category-utilization`、`/api/statistics/borrow`、`/api/statistics/overdue`、`/api/statistics/hot-time-slots`、`/api/statistics/device-ranking`、`/api/statistics/user-ranking`
+- 把 `statistics_daily` 的聚合来源明确写成 `reservation`、`borrow_record`、`overdue_record`、`device`、`device_category`、`user`，并说明查询层默认只读预聚合表
+
+### 6.1 本轮 Task 14 回写结果
+
+- 已补齐测试库中的 `statistics_daily` 与 `overdue_record`，用于支撑统计聚合与端到端 smoke 验证
+- 已形成通知接口正式家族 `/api/notifications*` 与统计接口正式家族 `/api/statistics/*` 的实现与文档口径闭环
+- 文档继续保持 SQL 新口径：三角色、`PENDING_DEVICE_APPROVAL` 等完整预约状态、`IN_APP` 已读能力、`statistics_daily` 聚合模型；不得回退到旧 `ADMIN` 或旧 `PENDING`
 
 ---
 

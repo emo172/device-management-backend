@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+        基础日志配置。
+        当前阶段优先保证本地开发、测试容器和后续部署骨架都能稳定输出统一格式的控制台日志，
+        避免统计调度、鉴权链和业务异常只在默认日志样式下难以排查。
+    -->
+    <property name="CONSOLE_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!--
+        业务代码默认输出 INFO，框架噪音适度收敛。
+        这样既能看到统计聚合等关键任务日志，也不会让 SQL 与自动配置日志淹没核心信息。
+    -->
+    <logger name="org.springframework" level="INFO"/>
+    <logger name="com.jhun.backend" level="INFO"/>
+    <logger name="org.mybatis" level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>
