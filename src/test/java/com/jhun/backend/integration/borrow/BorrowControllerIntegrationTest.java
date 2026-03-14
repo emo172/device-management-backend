@@ -137,6 +137,102 @@ class BorrowControllerIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
+    /**
+     * 验证设备管理员确认归还后，借还记录会闭环为已归还，且设备才允许回到 AVAILABLE。
+     */
+    @Test
+    void shouldConfirmReturnAndRestoreDeviceAvailable() throws Exception {
+        User user = createUser("brw-u-3", "borrow-user-3@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-3", "borrow-device-admin-3@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-23T09:00:00", "2026-03-23T11:00:00", "2026-03-23T09:15:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-23T09:25:00",
+                                  "borrowCheckStatus": "借出前检查正常",
+                                  "remark": "先借出"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        BorrowRecordRow borrowRecord = loadBorrowRecordByReservationId(reservationId);
+
+        mockMvc.perform(post("/api/borrow-records/{borrowRecordId}/confirm-return", borrowRecord.id())
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "returnTime": "2026-03-23T10:50:00",
+                                  "returnCheckStatus": "设备归还完好",
+                                  "remark": "按时归还"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(borrowRecord.id()))
+                .andExpect(jsonPath("$.data.status").value("RETURNED"));
+
+        BorrowRecordRow refreshedBorrowRecord = loadBorrowRecordByReservationId(reservationId);
+        Device refreshedDevice = deviceMapper.selectById(device.getId());
+
+        org.junit.jupiter.api.Assertions.assertEquals("RETURNED", refreshedBorrowRecord.status());
+        org.junit.jupiter.api.Assertions.assertEquals(deviceAdmin.getId(), refreshedBorrowRecord.returnOperatorId());
+        org.junit.jupiter.api.Assertions.assertEquals("AVAILABLE", refreshedDevice.getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals("归还确认", refreshedDevice.getStatusChangeReason());
+        org.junit.jupiter.api.Assertions.assertEquals("AVAILABLE",
+                deviceStatusLogMapper.findByDeviceId(device.getId()).getFirst().getNewStatus());
+    }
+
+    /**
+     * 验证借还列表与详情接口可以返回记录，用于支撑借还记录页与详情抽屉联调。
+     */
+    @Test
+    void shouldListAndGetBorrowRecords() throws Exception {
+        User user = createUser("brw-u-4", "borrow-user-4@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-4", "borrow-device-admin-4@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-24T09:00:00", "2026-03-24T11:30:00", "2026-03-24T09:05:00");
+
+        MvcResult confirmBorrowResult = mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-24T09:10:00",
+                                  "borrowCheckStatus": "借出前状态正常",
+                                  "remark": "用于查询测试"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String borrowRecordId = objectMapper.readTree(confirmBorrowResult.getResponse().getContentAsString())
+                .path("data")
+                .path("id")
+                .asText();
+
+        mockMvc.perform(get("/api/borrow-records")
+                        .header("Authorization", bearer(user, "USER"))
+                        .param("page", "1")
+                        .param("size", "10")
+                        .param("status", "BORROWED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records[0].id").value(borrowRecordId));
+
+        mockMvc.perform(get("/api/borrow-records/{id}", borrowRecordId)
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(borrowRecordId))
+                .andExpect(jsonPath("$.data.deviceId").value(device.getId()))
+                .andExpect(jsonPath("$.data.status").value("BORROWED"));
+    }
+
     private String createCheckedInReservation(
             User user,
             User deviceAdmin,

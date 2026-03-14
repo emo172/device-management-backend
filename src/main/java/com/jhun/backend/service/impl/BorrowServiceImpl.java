@@ -1,8 +1,10 @@
 package com.jhun.backend.service.impl;
 
 import com.jhun.backend.common.exception.BusinessException;
+import com.jhun.backend.dto.borrow.BorrowRecordPageResponse;
 import com.jhun.backend.dto.borrow.BorrowRecordResponse;
 import com.jhun.backend.dto.borrow.ConfirmBorrowRequest;
+import com.jhun.backend.dto.borrow.ConfirmReturnRequest;
 import com.jhun.backend.entity.BorrowRecord;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceStatusLog;
@@ -14,6 +16,7 @@ import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -83,6 +86,59 @@ public class BorrowServiceImpl implements BorrowService {
         return toResponse(borrowRecord);
     }
 
+    @Override
+    @Transactional
+    public BorrowRecordResponse confirmReturn(String borrowRecordId, String operatorId, String role, ConfirmReturnRequest request) {
+        ensureDeviceAdmin(role, "只有设备管理员可以确认归还");
+        BorrowRecord borrowRecord = mustFindBorrowRecord(borrowRecordId);
+        if (!"BORROWED".equals(borrowRecord.getStatus()) && !"OVERDUE".equals(borrowRecord.getStatus())) {
+            throw new BusinessException("当前借还记录不处于可归还状态");
+        }
+
+        LocalDateTime returnTime = request != null && request.returnTime() != null ? request.returnTime() : LocalDateTime.now();
+        if (returnTime.isBefore(borrowRecord.getBorrowTime())) {
+            throw new BusinessException("归还时间不能早于借用时间");
+        }
+
+        borrowRecord.setReturnTime(returnTime);
+        borrowRecord.setReturnCheckStatus(request == null ? null : request.returnCheckStatus());
+        borrowRecord.setReturnOperatorId(operatorId);
+        borrowRecord.setStatus("RETURNED");
+        borrowRecord.setRemark(mergeReturnRemark(borrowRecord.getRemark(), request == null ? null : request.remark()));
+        borrowRecord.setUpdatedAt(LocalDateTime.now());
+        borrowRecordMapper.updateById(borrowRecord);
+
+        Device device = mustFindDevice(borrowRecord.getDeviceId());
+        if (!"BORROWED".equals(device.getStatus())) {
+            throw new BusinessException("设备当前不处于借出状态，无法确认归还");
+        }
+        updateDeviceStatus(device, "AVAILABLE", "归还确认", operatorId);
+        return toResponse(borrowRecord);
+    }
+
+    @Override
+    public BorrowRecordPageResponse listBorrowRecords(String userId, String role, int page, int size, String status) {
+        String visibleUserId = "USER".equals(role) ? userId : null;
+        List<BorrowRecord> allRecords = borrowRecordMapper.findByConditions(status, visibleUserId);
+        int safePage = Math.max(page, 1);
+        int safeSize = Math.max(size, 1);
+        int fromIndex = Math.max((safePage - 1) * safeSize, 0);
+        int toIndex = Math.min(fromIndex + safeSize, allRecords.size());
+        List<BorrowRecordResponse> records = fromIndex >= allRecords.size()
+                ? List.of()
+                : allRecords.subList(fromIndex, toIndex).stream().map(this::toResponse).toList();
+        return new BorrowRecordPageResponse(allRecords.size(), records);
+    }
+
+    @Override
+    public BorrowRecordResponse getBorrowRecordDetail(String borrowRecordId, String userId, String role) {
+        BorrowRecord borrowRecord = mustFindBorrowRecord(borrowRecordId);
+        if ("USER".equals(role) && !userId.equals(borrowRecord.getUserId())) {
+            throw new BusinessException("只能查看本人借还记录");
+        }
+        return toResponse(borrowRecord);
+    }
+
     /**
      * 借用确认前必须同时满足“预约已审批通过”和“用户已完成正常/超时签到”。
      * 这是借还域与预约域的关键衔接点，用于避免管理员绕过签到直接生成正式借还记录。
@@ -102,6 +158,19 @@ public class BorrowServiceImpl implements BorrowService {
         device.setStatusChangeReason(reason);
         deviceMapper.updateById(device);
         saveStatusLog(device.getId(), oldStatus, newStatus, reason, operatorId);
+    }
+
+    /**
+     * 归还备注追加在原借出备注之后，避免归还确认覆盖借出交接信息，破坏同一条借还记录的审计完整性。
+     */
+    private String mergeReturnRemark(String existingRemark, String returnRemark) {
+        if (returnRemark == null || returnRemark.isBlank()) {
+            return existingRemark;
+        }
+        if (existingRemark == null || existingRemark.isBlank()) {
+            return returnRemark;
+        }
+        return existingRemark + " | 归还备注：" + returnRemark;
     }
 
     private void saveStatusLog(String deviceId, String oldStatus, String newStatus, String reason, String operatorId) {
@@ -131,6 +200,14 @@ public class BorrowServiceImpl implements BorrowService {
                 borrowRecord.getRemark(),
                 borrowRecord.getOperatorId(),
                 borrowRecord.getReturnOperatorId());
+    }
+
+    private BorrowRecord mustFindBorrowRecord(String borrowRecordId) {
+        BorrowRecord borrowRecord = borrowRecordMapper.selectById(borrowRecordId);
+        if (borrowRecord == null) {
+            throw new BusinessException("借还记录不存在");
+        }
+        return borrowRecord;
     }
 
     private Reservation mustFindReservation(String reservationId) {
