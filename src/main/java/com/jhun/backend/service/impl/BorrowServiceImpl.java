@@ -49,6 +49,12 @@ public class BorrowServiceImpl implements BorrowService {
 
     @Override
     @Transactional
+    /**
+     * 以事务方式完成借用确认。
+     * <p>
+     * 这里先校验角色、预约状态和签到状态，再校验同一预约只能生成一条借还记录，最后同时写入借还记录并更新设备状态与状态日志；
+     * 之所以必须放在一个事务里，是因为借用确认一旦成功，系统就要同时承认“记录已建立”和“设备已借出”两个事实，任何一步单独成功都会导致业务状态失真。
+     */
     public BorrowRecordResponse confirmBorrow(String reservationId, String operatorId, String role, ConfirmBorrowRequest request) {
         ensureDeviceAdmin(role, "只有设备管理员可以确认借用");
         Reservation reservation = mustFindReservation(reservationId);
@@ -88,6 +94,13 @@ public class BorrowServiceImpl implements BorrowService {
 
     @Override
     @Transactional
+    /**
+     * 以事务方式完成归还确认。
+     * <p>
+     * 只有设备管理员可以执行该操作，并且只有处于借出中的正式记录才允许归还；
+     * 该方法先更新 borrow_record 的归还信息，再把设备从 {@code BORROWED} 恢复为 {@code AVAILABLE} 并记录设备日志，
+     * 用于落实“归还必须走正式流程，不能靠设备状态手工回退”的规则。
+     */
     public BorrowRecordResponse confirmReturn(String borrowRecordId, String operatorId, String role, ConfirmReturnRequest request) {
         ensureDeviceAdmin(role, "只有设备管理员可以确认归还");
         BorrowRecord borrowRecord = mustFindBorrowRecord(borrowRecordId);
@@ -117,6 +130,12 @@ public class BorrowServiceImpl implements BorrowService {
     }
 
     @Override
+    /**
+     * 分页查询借还记录。
+     * <p>
+     * 当调用者是普通用户时，这里强制把查询范围收敛到本人，避免用户通过列表接口浏览他人借用轨迹；
+     * 当调用者是管理角色时，则保留管理端排查与审计所需的全量视角。
+     */
     public BorrowRecordPageResponse listBorrowRecords(String userId, String role, int page, int size, String status) {
         String visibleUserId = "USER".equals(role) ? userId : null;
         List<BorrowRecord> allRecords = borrowRecordMapper.findByConditions(status, visibleUserId);
@@ -131,6 +150,12 @@ public class BorrowServiceImpl implements BorrowService {
     }
 
     @Override
+    /**
+     * 查询单条借还记录详情。
+     * <p>
+     * 详情接口与列表接口保持一致的权限边界：普通用户只能查看本人记录，管理角色可以查看全部；
+     * 这样可以防止详情接口成为绕过列表过滤的越权入口。
+     */
     public BorrowRecordResponse getBorrowRecordDetail(String borrowRecordId, String userId, String role) {
         BorrowRecord borrowRecord = mustFindBorrowRecord(borrowRecordId);
         if ("USER".equals(role) && !userId.equals(borrowRecord.getUserId())) {
@@ -152,6 +177,12 @@ public class BorrowServiceImpl implements BorrowService {
         }
     }
 
+    /**
+     * 执行设备状态正式流转并写入状态日志。
+     * <p>
+     * 借还模块不能只改 device.status，因为那样会丢失是谁、因为什么做了状态切换；
+     * 因此每次借出/归还都同步写入 device_status_log，确保后续审计可以完整还原状态演进过程。
+     */
     private void updateDeviceStatus(Device device, String newStatus, String reason, String operatorId) {
         String oldStatus = device.getStatus();
         device.setStatus(newStatus);
@@ -202,6 +233,11 @@ public class BorrowServiceImpl implements BorrowService {
                 borrowRecord.getReturnOperatorId());
     }
 
+    /**
+     * 校验并返回借还记录。
+     * <p>
+     * 单独抽出该入口是为了把“记录不存在”统一收敛为业务异常，避免控制层或查询接口出现空指针式的非业务失败。
+     */
     private BorrowRecord mustFindBorrowRecord(String borrowRecordId) {
         BorrowRecord borrowRecord = borrowRecordMapper.selectById(borrowRecordId);
         if (borrowRecord == null) {
@@ -210,6 +246,11 @@ public class BorrowServiceImpl implements BorrowService {
         return borrowRecord;
     }
 
+    /**
+     * 校验并返回预约。
+     * <p>
+     * 借用确认依赖预约作为真相源，因此这里必须在业务层明确阻断不存在的预约，防止后续写入孤儿 borrow_record。
+     */
     private Reservation mustFindReservation(String reservationId) {
         Reservation reservation = reservationMapper.selectById(reservationId);
         if (reservation == null) {
@@ -218,6 +259,11 @@ public class BorrowServiceImpl implements BorrowService {
         return reservation;
     }
 
+    /**
+     * 校验并返回设备。
+     * <p>
+     * 借还闭环最终要作用到设备状态，所以在进入状态流转前必须保证设备实体真实存在，避免形成无主日志或无效状态更新。
+     */
     private Device mustFindDevice(String deviceId) {
         Device device = deviceMapper.selectById(deviceId);
         if (device == null) {
@@ -226,6 +272,12 @@ public class BorrowServiceImpl implements BorrowService {
         return device;
     }
 
+    /**
+     * 强制校验当前操作人是否为设备管理员。
+     * <p>
+     * 借用确认与归还确认都属于 DEVICE_ADMIN 的专属职责，SYSTEM_ADMIN 不能介入借还状态流转，
+     * 因此这里统一收敛角色校验，防止不同入口出现口径不一致。
+     */
     private void ensureDeviceAdmin(String role, String message) {
         if (!"DEVICE_ADMIN".equals(role)) {
             throw new BusinessException(message);

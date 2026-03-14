@@ -138,6 +138,90 @@ class BorrowControllerIntegrationTest {
     }
 
     /**
+     * 验证预约尚未审批通过时禁止确认借用，避免管理员绕过预约审批链直接占用设备。
+     */
+    @Test
+    void shouldRejectBorrowConfirmationWhenReservationNotApproved() throws Exception {
+        User user = createUser("brw-u-5", "borrow-user-5@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-5", "borrow-device-admin-5@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createPendingReservation(user, device,
+                "2026-03-25T09:00:00", "2026-03-25T11:00:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-25T09:10:00",
+                                  "borrowCheckStatus": "试图跳过审批",
+                                  "remark": "不应成功"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证预约虽已审批通过但未签到时仍禁止确认借用，保护“签到是借用前置条件”的业务规则。
+     */
+    @Test
+    void shouldRejectBorrowConfirmationWhenSignStatusInvalid() throws Exception {
+        User user = createUser("brw-u-6", "borrow-user-6@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-6", "borrow-device-admin-6@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createApprovedReservationWithoutCheckIn(user, deviceAdmin, device,
+                "2026-03-25T13:00:00", "2026-03-25T15:00:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-25T13:20:00",
+                                  "borrowCheckStatus": "用户未签到",
+                                  "remark": "不应成功"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证同一预约重复确认借用会被拒绝，保护 SQL 唯一约束与业务幂等边界不会被第二次请求破坏。
+     */
+    @Test
+    void shouldRejectDuplicateBorrowConfirmationForSameReservation() throws Exception {
+        User user = createUser("brw-u-7", "borrow-user-7@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-7", "borrow-device-admin-7@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-26T09:00:00", "2026-03-26T10:30:00", "2026-03-26T09:05:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-26T09:10:00",
+                                  "borrowCheckStatus": "首次借出",
+                                  "remark": "第一次确认"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-26T09:15:00",
+                                  "borrowCheckStatus": "重复借出",
+                                  "remark": "第二次确认"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
      * 验证设备管理员确认归还后，借还记录会闭环为已归还，且设备才允许回到 AVAILABLE。
      */
     @Test
@@ -185,6 +269,45 @@ class BorrowControllerIntegrationTest {
         org.junit.jupiter.api.Assertions.assertEquals("归还确认", refreshedDevice.getStatusChangeReason());
         org.junit.jupiter.api.Assertions.assertEquals("AVAILABLE",
                 deviceStatusLogMapper.findByDeviceId(device.getId()).getFirst().getNewStatus());
+    }
+
+    /**
+     * 验证 SYSTEM_ADMIN 不能确认归还，避免越权把设备直接从 BORROWED 恢复为 AVAILABLE。
+     */
+    @Test
+    void shouldRejectReturnConfirmationBySystemAdmin() throws Exception {
+        User user = createUser("brw-u-8", "borrow-user-8@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-8", "borrow-device-admin-8@example.com", "DEVICE_ADMIN");
+        User systemAdmin = createUser("brw-sa-8", "borrow-system-admin-8@example.com", "SYSTEM_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-26T13:00:00", "2026-03-26T15:00:00", "2026-03-26T13:10:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-26T13:15:00",
+                                  "borrowCheckStatus": "已借出",
+                                  "remark": "等待归还"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        BorrowRecordRow borrowRecord = loadBorrowRecordByReservationId(reservationId);
+
+        mockMvc.perform(post("/api/borrow-records/{borrowRecordId}/confirm-return", borrowRecord.id())
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "returnTime": "2026-03-26T14:50:00",
+                                  "returnCheckStatus": "越权归还",
+                                  "remark": "不应成功"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
     }
 
     /**
@@ -240,6 +363,45 @@ class BorrowControllerIntegrationTest {
             String startTime,
             String endTime,
             String checkInTime) throws Exception {
+        String reservationId = createApprovedReservationWithoutCheckIn(user, deviceAdmin, device, startTime, endTime);
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "%s"
+                                }
+                                """.formatted(checkInTime)))
+                .andExpect(status().isOk());
+
+        return reservationId;
+    }
+
+    private String createApprovedReservationWithoutCheckIn(
+            User user,
+            User deviceAdmin,
+            Device device,
+            String startTime,
+            String endTime) throws Exception {
+        String reservationId = createPendingReservation(user, device, startTime, endTime);
+
+        mockMvc.perform(post("/api/reservations/{id}/audit", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "approved": true,
+                                  "remark": "审批通过，允许借用"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+        return reservationId;
+    }
+
+    private String createPendingReservation(User user, Device device, String startTime, String endTime) throws Exception {
         MvcResult createResult = mockMvc.perform(post("/api/reservations")
                         .header("Authorization", bearer(user, "USER"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -254,31 +416,7 @@ class BorrowControllerIntegrationTest {
                                 """.formatted(device.getId(), startTime, endTime)))
                 .andExpect(status().isOk())
                 .andReturn();
-        String reservationId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
-
-        mockMvc.perform(post("/api/reservations/{id}/audit", reservationId)
-                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "approved": true,
-                                  "remark": "审批通过，允许借用"
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("APPROVED"));
-
-        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
-                        .header("Authorization", bearer(user, "USER"))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "checkInTime": "%s"
-                                }
-                                """.formatted(checkInTime)))
-                .andExpect(status().isOk());
-
-        return reservationId;
+        return objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
     }
 
     private User createUser(String username, String email, String roleCode) {
