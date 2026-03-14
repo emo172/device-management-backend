@@ -1,0 +1,470 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.StatisticsDailyMapper">
+
+    <!--
+        按统计日整体重算前，先清理当天旧聚合结果，确保任务重复执行时仍然保持幂等。
+        当前阶段采用“先删后插”的批量重算策略，语义等价于按日 upsert。
+    -->
+    <delete id="deleteByStatDate">
+        DELETE FROM statistics_daily
+        WHERE stat_date = #{statDate}
+    </delete>
+
+    <!-- 生成设备利用率全局总览，用于统计首页总览卡片。 -->
+    <select id="summarizeGlobalDeviceUtilization" resultType="com.jhun.backend.entity.StatisticsDaily">
+        WITH reservation_stats AS (
+            SELECT COUNT(*) AS total_reservations,
+                   SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+                   SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+                   SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+                   SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations
+            FROM reservation
+            WHERE start_time &gt;= #{rangeStart}
+              AND start_time &lt; #{rangeEnd}
+        ),
+        borrow_stats AS (
+            SELECT COALESCE((
+                       SELECT COUNT(*)
+                       FROM borrow_record
+                       WHERE borrow_time &gt;= #{rangeStart}
+                         AND borrow_time &lt; #{rangeEnd}
+                   ), 0) AS total_borrows,
+                   COALESCE((
+                       SELECT COUNT(*)
+                       FROM borrow_record
+                       WHERE return_time IS NOT NULL
+                         AND return_time &gt;= #{rangeStart}
+                         AND return_time &lt; #{rangeEnd}
+                   ), 0) AS total_returns
+            FROM dual
+        ),
+        overdue_stats AS (
+            SELECT COUNT(*) AS total_overdue,
+                   COALESCE(SUM(overdue_hours), 0) AS total_overdue_hours
+            FROM overdue_record
+            WHERE created_at &gt;= #{rangeStart}
+              AND created_at &lt; #{rangeEnd}
+        )
+        SELECT #{statDate} AS stat_date,
+               'DEVICE_UTILIZATION' AS stat_type,
+               'DAY' AS granularity,
+               'GLOBAL' AS subject_type,
+               'ALL' AS subject_value,
+               COALESCE(r.total_reservations, 0) AS total_reservations,
+               COALESCE(r.approved_reservations, 0) AS approved_reservations,
+               COALESCE(r.rejected_reservations, 0) AS rejected_reservations,
+               COALESCE(r.cancelled_reservations, 0) AS cancelled_reservations,
+               COALESCE(r.expired_reservations, 0) AS expired_reservations,
+               COALESCE(b.total_borrows, 0) AS total_borrows,
+               COALESCE(b.total_returns, 0) AS total_returns,
+               COALESCE(o.total_overdue, 0) AS total_overdue,
+               COALESCE(o.total_overdue_hours, 0) AS total_overdue_hours,
+               CASE WHEN COALESCE(r.total_reservations, 0) = 0 THEN 0
+                    ELSE ROUND((COALESCE(b.total_borrows, 0) * 100.0) / r.total_reservations, 2)
+               END AS utilization_rate
+        FROM reservation_stats r, borrow_stats b, overdue_stats o
+    </select>
+
+    <!--
+        生成设备维度利用率。
+        通过分别对预约、借还、逾期做子聚合后再按设备关联，避免多表直接关联时产生乘积放大。
+    -->
+    <select id="summarizeDeviceUtilization" resultType="com.jhun.backend.entity.StatisticsDaily">
+        WITH reservation_stats AS (
+            SELECT device_id,
+                   COUNT(*) AS total_reservations,
+                   SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+                   SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+                   SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+                   SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations
+            FROM reservation
+            WHERE start_time &gt;= #{rangeStart}
+              AND start_time &lt; #{rangeEnd}
+            GROUP BY device_id
+        ),
+        borrow_stats AS (
+            SELECT stats.device_id,
+                   SUM(stats.total_borrows) AS total_borrows,
+                   SUM(stats.total_returns) AS total_returns
+            FROM (
+                SELECT device_id, COUNT(*) AS total_borrows, 0 AS total_returns
+                FROM borrow_record
+                WHERE borrow_time &gt;= #{rangeStart}
+                  AND borrow_time &lt; #{rangeEnd}
+                GROUP BY device_id
+                UNION ALL
+                SELECT device_id, 0 AS total_borrows, COUNT(*) AS total_returns
+                FROM borrow_record
+                WHERE return_time IS NOT NULL
+                  AND return_time &gt;= #{rangeStart}
+                  AND return_time &lt; #{rangeEnd}
+                GROUP BY device_id
+            ) stats
+            GROUP BY stats.device_id
+        ),
+        overdue_stats AS (
+            SELECT device_id,
+                   COUNT(*) AS total_overdue,
+                   COALESCE(SUM(overdue_hours), 0) AS total_overdue_hours
+            FROM overdue_record
+            WHERE created_at &gt;= #{rangeStart}
+              AND created_at &lt; #{rangeEnd}
+            GROUP BY device_id
+        )
+        SELECT #{statDate} AS stat_date,
+               'DEVICE_UTILIZATION' AS stat_type,
+               'DAY' AS granularity,
+               'DEVICE' AS subject_type,
+               d.id AS subject_value,
+               COALESCE(r.total_reservations, 0) AS total_reservations,
+               COALESCE(r.approved_reservations, 0) AS approved_reservations,
+               COALESCE(r.rejected_reservations, 0) AS rejected_reservations,
+               COALESCE(r.cancelled_reservations, 0) AS cancelled_reservations,
+               COALESCE(r.expired_reservations, 0) AS expired_reservations,
+               COALESCE(b.total_borrows, 0) AS total_borrows,
+               COALESCE(b.total_returns, 0) AS total_returns,
+               COALESCE(o.total_overdue, 0) AS total_overdue,
+               COALESCE(o.total_overdue_hours, 0) AS total_overdue_hours,
+               CASE WHEN COALESCE(r.total_reservations, 0) = 0 THEN 0
+                    ELSE ROUND((COALESCE(b.total_borrows, 0) * 100.0) / r.total_reservations, 2)
+               END AS utilization_rate
+        FROM device d
+        LEFT JOIN reservation_stats r ON r.device_id = d.id
+        LEFT JOIN borrow_stats b ON b.device_id = d.id
+        LEFT JOIN overdue_stats o ON o.device_id = d.id
+        WHERE COALESCE(r.total_reservations, 0) &gt; 0
+           OR COALESCE(b.total_borrows, 0) &gt; 0
+           OR COALESCE(o.total_overdue, 0) &gt; 0
+    </select>
+
+    <!-- 生成分类利用率全局总览，用于保持分类维度和设备维度的全局口径一致。 -->
+    <select id="summarizeGlobalCategoryUtilization" resultType="com.jhun.backend.entity.StatisticsDaily">
+        <include refid="globalCategoryBody" />
+    </select>
+
+    <!-- 生成分类维度利用率，供分类统计页展示。 -->
+    <select id="summarizeCategoryUtilization" resultType="com.jhun.backend.entity.StatisticsDaily">
+        WITH reservation_stats AS (
+            SELECT d.category_id,
+                   COUNT(*) AS total_reservations,
+                   SUM(CASE WHEN r.status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+                   SUM(CASE WHEN r.status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+                   SUM(CASE WHEN r.status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+                   SUM(CASE WHEN r.status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations
+            FROM reservation r
+            INNER JOIN device d ON d.id = r.device_id
+            WHERE r.start_time &gt;= #{rangeStart}
+              AND r.start_time &lt; #{rangeEnd}
+            GROUP BY d.category_id
+        ),
+        borrow_stats AS (
+            SELECT stats.category_id,
+                   SUM(stats.total_borrows) AS total_borrows,
+                   SUM(stats.total_returns) AS total_returns
+            FROM (
+                SELECT d.category_id, COUNT(*) AS total_borrows, 0 AS total_returns
+                FROM borrow_record b
+                INNER JOIN device d ON d.id = b.device_id
+                WHERE b.borrow_time &gt;= #{rangeStart}
+                  AND b.borrow_time &lt; #{rangeEnd}
+                GROUP BY d.category_id
+                UNION ALL
+                SELECT d.category_id, 0 AS total_borrows, COUNT(*) AS total_returns
+                FROM borrow_record b
+                INNER JOIN device d ON d.id = b.device_id
+                WHERE b.return_time IS NOT NULL
+                  AND b.return_time &gt;= #{rangeStart}
+                  AND b.return_time &lt; #{rangeEnd}
+                GROUP BY d.category_id
+            ) stats
+            GROUP BY stats.category_id
+        ),
+        overdue_stats AS (
+            SELECT d.category_id,
+                   COUNT(*) AS total_overdue,
+                   COALESCE(SUM(o.overdue_hours), 0) AS total_overdue_hours
+            FROM overdue_record o
+            INNER JOIN device d ON d.id = o.device_id
+            WHERE o.created_at &gt;= #{rangeStart}
+              AND o.created_at &lt; #{rangeEnd}
+            GROUP BY d.category_id
+        )
+        SELECT #{statDate} AS stat_date,
+               'CATEGORY_UTILIZATION' AS stat_type,
+               'DAY' AS granularity,
+               'CATEGORY' AS subject_type,
+               c.id AS subject_value,
+               COALESCE(r.total_reservations, 0) AS total_reservations,
+               COALESCE(r.approved_reservations, 0) AS approved_reservations,
+               COALESCE(r.rejected_reservations, 0) AS rejected_reservations,
+               COALESCE(r.cancelled_reservations, 0) AS cancelled_reservations,
+               COALESCE(r.expired_reservations, 0) AS expired_reservations,
+               COALESCE(b.total_borrows, 0) AS total_borrows,
+               COALESCE(b.total_returns, 0) AS total_returns,
+               COALESCE(o.total_overdue, 0) AS total_overdue,
+               COALESCE(o.total_overdue_hours, 0) AS total_overdue_hours,
+               CASE WHEN COALESCE(r.total_reservations, 0) = 0 THEN 0
+                    ELSE ROUND((COALESCE(b.total_borrows, 0) * 100.0) / r.total_reservations, 2)
+               END AS utilization_rate
+        FROM device_category c
+        LEFT JOIN reservation_stats r ON r.category_id = c.id
+        LEFT JOIN borrow_stats b ON b.category_id = c.id
+        LEFT JOIN overdue_stats o ON o.category_id = c.id
+        WHERE COALESCE(r.total_reservations, 0) &gt; 0
+           OR COALESCE(b.total_borrows, 0) &gt; 0
+           OR COALESCE(o.total_overdue, 0) &gt; 0
+    </select>
+
+    <!-- 生成借用统计全局总览。 -->
+    <select id="summarizeGlobalUserBorrow" resultType="com.jhun.backend.entity.StatisticsDaily">
+        WITH reservation_stats AS (
+            SELECT COUNT(*) AS total_reservations,
+                   SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+                   SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+                   SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+                   SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations
+            FROM reservation
+            WHERE start_time &gt;= #{rangeStart}
+              AND start_time &lt; #{rangeEnd}
+        ),
+        borrow_stats AS (
+            SELECT COALESCE((
+                       SELECT COUNT(*)
+                       FROM borrow_record
+                       WHERE borrow_time &gt;= #{rangeStart}
+                         AND borrow_time &lt; #{rangeEnd}
+                   ), 0) AS total_borrows,
+                   COALESCE((
+                       SELECT COUNT(*)
+                       FROM borrow_record
+                       WHERE return_time IS NOT NULL
+                         AND return_time &gt;= #{rangeStart}
+                         AND return_time &lt; #{rangeEnd}
+                   ), 0) AS total_returns
+            FROM dual
+        ),
+        overdue_stats AS (
+            SELECT COUNT(*) AS total_overdue,
+                   COALESCE(SUM(overdue_hours), 0) AS total_overdue_hours
+            FROM overdue_record
+            WHERE created_at &gt;= #{rangeStart}
+              AND created_at &lt; #{rangeEnd}
+        )
+        SELECT #{statDate} AS stat_date,
+               'USER_BORROW' AS stat_type,
+               'DAY' AS granularity,
+               'GLOBAL' AS subject_type,
+               'ALL' AS subject_value,
+               COALESCE(r.total_reservations, 0) AS total_reservations,
+               COALESCE(r.approved_reservations, 0) AS approved_reservations,
+               COALESCE(r.rejected_reservations, 0) AS rejected_reservations,
+               COALESCE(r.cancelled_reservations, 0) AS cancelled_reservations,
+               COALESCE(r.expired_reservations, 0) AS expired_reservations,
+               COALESCE(b.total_borrows, 0) AS total_borrows,
+               COALESCE(b.total_returns, 0) AS total_returns,
+               COALESCE(o.total_overdue, 0) AS total_overdue,
+               COALESCE(o.total_overdue_hours, 0) AS total_overdue_hours,
+               NULL AS utilization_rate
+        FROM reservation_stats r, borrow_stats b, overdue_stats o
+    </select>
+
+    <!-- 生成用户借用排行的聚合底表。 -->
+    <select id="summarizeUserBorrow" resultType="com.jhun.backend.entity.StatisticsDaily">
+        WITH reservation_stats AS (
+            SELECT user_id,
+                   COUNT(*) AS total_reservations,
+                   SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+                   SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+                   SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+                   SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations
+            FROM reservation
+            WHERE start_time &gt;= #{rangeStart}
+              AND start_time &lt; #{rangeEnd}
+            GROUP BY user_id
+        ),
+        borrow_stats AS (
+            SELECT stats.user_id,
+                   SUM(stats.total_borrows) AS total_borrows,
+                   SUM(stats.total_returns) AS total_returns
+            FROM (
+                SELECT user_id, COUNT(*) AS total_borrows, 0 AS total_returns
+                FROM borrow_record
+                WHERE borrow_time &gt;= #{rangeStart}
+                  AND borrow_time &lt; #{rangeEnd}
+                GROUP BY user_id
+                UNION ALL
+                SELECT user_id, 0 AS total_borrows, COUNT(*) AS total_returns
+                FROM borrow_record
+                WHERE return_time IS NOT NULL
+                  AND return_time &gt;= #{rangeStart}
+                  AND return_time &lt; #{rangeEnd}
+                GROUP BY user_id
+            ) stats
+            GROUP BY stats.user_id
+        ),
+        overdue_stats AS (
+            SELECT user_id,
+                   COUNT(*) AS total_overdue,
+                   COALESCE(SUM(overdue_hours), 0) AS total_overdue_hours
+            FROM overdue_record
+            WHERE created_at &gt;= #{rangeStart}
+              AND created_at &lt; #{rangeEnd}
+            GROUP BY user_id
+        )
+        SELECT #{statDate} AS stat_date,
+               'USER_BORROW' AS stat_type,
+               'DAY' AS granularity,
+               'USER' AS subject_type,
+               u.id AS subject_value,
+               COALESCE(r.total_reservations, 0) AS total_reservations,
+               COALESCE(r.approved_reservations, 0) AS approved_reservations,
+               COALESCE(r.rejected_reservations, 0) AS rejected_reservations,
+               COALESCE(r.cancelled_reservations, 0) AS cancelled_reservations,
+               COALESCE(r.expired_reservations, 0) AS expired_reservations,
+               COALESCE(b.total_borrows, 0) AS total_borrows,
+               COALESCE(b.total_returns, 0) AS total_returns,
+               COALESCE(o.total_overdue, 0) AS total_overdue,
+               COALESCE(o.total_overdue_hours, 0) AS total_overdue_hours,
+               NULL AS utilization_rate
+        FROM `user` u
+        LEFT JOIN reservation_stats r ON r.user_id = u.id
+        LEFT JOIN borrow_stats b ON b.user_id = u.id
+        LEFT JOIN overdue_stats o ON o.user_id = u.id
+        WHERE COALESCE(r.total_reservations, 0) &gt; 0
+           OR COALESCE(b.total_borrows, 0) &gt; 0
+           OR COALESCE(o.total_overdue, 0) &gt; 0
+    </select>
+
+    <!-- 生成逾期统计总览，供独立逾期卡片读取。 -->
+    <select id="summarizeGlobalOverdue" resultType="com.jhun.backend.entity.StatisticsDaily">
+        SELECT #{statDate} AS stat_date,
+               'OVERDUE_STAT' AS stat_type,
+               'DAY' AS granularity,
+               'GLOBAL' AS subject_type,
+               'ALL' AS subject_value,
+               0 AS total_reservations,
+               0 AS approved_reservations,
+               0 AS rejected_reservations,
+               0 AS cancelled_reservations,
+               0 AS expired_reservations,
+               0 AS total_borrows,
+               0 AS total_returns,
+               COUNT(*) AS total_overdue,
+               COALESCE(SUM(overdue_hours), 0) AS total_overdue_hours,
+               NULL AS utilization_rate
+        FROM overdue_record
+        WHERE created_at &gt;= #{rangeStart}
+          AND created_at &lt; #{rangeEnd}
+    </select>
+
+    <!-- 生成热门时段分布，当前以预约开始小时作为时段口径。 -->
+    <select id="summarizeTimeDistribution" resultType="com.jhun.backend.entity.StatisticsDaily">
+        SELECT #{statDate} AS stat_date,
+               'TIME_DISTRIBUTION' AS stat_type,
+               'DAY' AS granularity,
+               'TIME_SLOT' AS subject_type,
+               CASE WHEN HOUR(start_time) &lt; 10 THEN CONCAT('0', HOUR(start_time))
+                    ELSE CAST(HOUR(start_time) AS CHAR)
+               END AS subject_value,
+               COUNT(*) AS total_reservations,
+               SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+               SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+               SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+               SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations,
+               0 AS total_borrows,
+               0 AS total_returns,
+               0 AS total_overdue,
+               0 AS total_overdue_hours,
+               NULL AS utilization_rate
+        FROM reservation
+        WHERE start_time &gt;= #{rangeStart}
+          AND start_time &lt; #{rangeEnd}
+        GROUP BY HOUR(start_time)
+    </select>
+
+    <!-- 读取某个统计类型的全局汇总行。 -->
+    <select id="findGlobalRow" resultType="com.jhun.backend.entity.StatisticsDaily">
+        SELECT id, stat_date, stat_type, granularity, subject_type, subject_value,
+               total_reservations, approved_reservations, rejected_reservations, cancelled_reservations,
+               expired_reservations, total_borrows, total_returns, total_overdue, total_overdue_hours,
+               utilization_rate, created_at, updated_at
+        FROM statistics_daily
+        WHERE stat_date = #{statDate}
+          AND stat_type = #{statType}
+          AND subject_type = 'GLOBAL'
+          AND subject_value = 'ALL'
+        LIMIT 1
+    </select>
+
+    <!-- 按统计类型和对象类型读取聚合结果，供控制层组装具体视图。 -->
+    <select id="findRowsByDateAndType" resultType="com.jhun.backend.entity.StatisticsDaily">
+        SELECT id, stat_date, stat_type, granularity, subject_type, subject_value,
+               total_reservations, approved_reservations, rejected_reservations, cancelled_reservations,
+               expired_reservations, total_borrows, total_returns, total_overdue, total_overdue_hours,
+               utilization_rate, created_at, updated_at
+        FROM statistics_daily
+        WHERE stat_date = #{statDate}
+          AND stat_type = #{statType}
+          AND subject_type = #{subjectType}
+        ORDER BY subject_value ASC
+    </select>
+
+    <sql id="globalCategoryBody">
+        WITH reservation_stats AS (
+            SELECT COUNT(*) AS total_reservations,
+                   SUM(CASE WHEN r.status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_reservations,
+                   SUM(CASE WHEN r.status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_reservations,
+                   SUM(CASE WHEN r.status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled_reservations,
+                   SUM(CASE WHEN r.status = 'EXPIRED' THEN 1 ELSE 0 END) AS expired_reservations
+            FROM reservation r
+            INNER JOIN device d ON d.id = r.device_id
+            WHERE r.start_time &gt;= #{rangeStart}
+              AND r.start_time &lt; #{rangeEnd}
+        ),
+        borrow_stats AS (
+            SELECT COALESCE((
+                       SELECT COUNT(*)
+                       FROM borrow_record b
+                       INNER JOIN device d ON d.id = b.device_id
+                       WHERE b.borrow_time &gt;= #{rangeStart}
+                         AND b.borrow_time &lt; #{rangeEnd}
+                   ), 0) AS total_borrows,
+                   COALESCE((
+                       SELECT COUNT(*)
+                       FROM borrow_record b
+                       INNER JOIN device d ON d.id = b.device_id
+                       WHERE b.return_time IS NOT NULL
+                         AND b.return_time &gt;= #{rangeStart}
+                         AND b.return_time &lt; #{rangeEnd}
+                   ), 0) AS total_returns
+            FROM dual
+        ),
+        overdue_stats AS (
+            SELECT COUNT(*) AS total_overdue,
+                   COALESCE(SUM(o.overdue_hours), 0) AS total_overdue_hours
+            FROM overdue_record o
+            INNER JOIN device d ON d.id = o.device_id
+            WHERE o.created_at &gt;= #{rangeStart}
+              AND o.created_at &lt; #{rangeEnd}
+        )
+        SELECT #{statDate} AS stat_date,
+               'CATEGORY_UTILIZATION' AS stat_type,
+               'DAY' AS granularity,
+               'GLOBAL' AS subject_type,
+               'ALL' AS subject_value,
+               COALESCE(r.total_reservations, 0) AS total_reservations,
+               COALESCE(r.approved_reservations, 0) AS approved_reservations,
+               COALESCE(r.rejected_reservations, 0) AS rejected_reservations,
+               COALESCE(r.cancelled_reservations, 0) AS cancelled_reservations,
+               COALESCE(r.expired_reservations, 0) AS expired_reservations,
+               COALESCE(b.total_borrows, 0) AS total_borrows,
+               COALESCE(b.total_returns, 0) AS total_returns,
+               COALESCE(o.total_overdue, 0) AS total_overdue,
+               COALESCE(o.total_overdue_hours, 0) AS total_overdue_hours,
+               CASE WHEN COALESCE(r.total_reservations, 0) = 0 THEN 0
+                    ELSE ROUND((COALESCE(b.total_borrows, 0) * 100.0) / r.total_reservations, 2)
+               END AS utilization_rate
+        FROM reservation_stats r, borrow_stats b, overdue_stats o
+    </sql>
+</mapper>

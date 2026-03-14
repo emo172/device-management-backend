@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.ChatHistoryMapper">
+
+    <!--
+        查询当前用户的 AI 历史列表。
+        历史页只允许查看本人数据，因此这里显式按 user_id 过滤并按创建时间倒序返回。
+    -->
+    <select id="findByUserId" resultType="com.jhun.backend.entity.ChatHistory">
+        SELECT id,
+               user_id,
+               session_id,
+               user_input,
+               ai_response,
+               intent,
+               intent_confidence,
+               extracted_info,
+               device_id,
+               reservation_id,
+               execute_result,
+               error_message,
+               llm_model,
+               response_time_ms,
+               created_at
+        FROM chat_history
+        WHERE user_id = #{userId}
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <!--
+        查询当前用户拥有的一条 AI 历史详情。
+        通过 user_id + id 双重约束，避免出现跨用户读取历史记录的数据泄露问题。
+    -->
+    <select id="findOwnedById" resultType="com.jhun.backend.entity.ChatHistory">
+        SELECT id,
+               user_id,
+               session_id,
+               user_input,
+               ai_response,
+               intent,
+               intent_confidence,
+               extracted_info,
+               device_id,
+               reservation_id,
+               execute_result,
+               error_message,
+               llm_model,
+               response_time_ms,
+               created_at
+        FROM chat_history
+        WHERE user_id = #{userId}
+          AND id = #{historyId}
+        LIMIT 1
+    </select>
+</mapper>
