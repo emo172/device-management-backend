@@ -5,6 +5,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,6 +14,7 @@ import com.jhun.backend.config.security.JwtTokenProvider;
 import com.jhun.backend.dto.borrow.ConfirmBorrowRequest;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
+import com.jhun.backend.entity.DeviceStatusLog;
 import com.jhun.backend.entity.Role;
 import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.DeviceCategoryMapper;
@@ -39,6 +42,7 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -67,6 +71,8 @@ class BorrowControllerIntegrationTest {
     private ReservationMapper reservationMapper;
     @Autowired
     private DeviceStatusLogMapper deviceStatusLogMapper;
+    @MockitoSpyBean
+    private DeviceStatusLogMapper deviceStatusLogMapperSpy;
     @Autowired
     private PasswordEncoder passwordEncoder;
     @Autowired
@@ -261,6 +267,41 @@ class BorrowControllerIntegrationTest {
         } finally {
             executorService.shutdownNow();
         }
+    }
+
+    /**
+     * 验证借用确认在写入 borrow_record 后如果设备状态日志写入失败，会整体事务回滚。
+     * <p>
+     * 该场景用于证明借用确认不是“前半成功、后半失败”的半事务：
+     * 即使 borrow_record 已经尝试插入，只要后续联动步骤异常，最终也不会残留借还记录或错误的设备状态。
+     */
+    @Test
+    void shouldRollbackBorrowConfirmationWhenDeviceStatusLogInsertFails() throws Exception {
+        User user = createUser("brw-u-11", "borrow-user-11@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-11", "borrow-device-admin-11@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-28T09:00:00", "2026-03-28T11:00:00", "2026-03-28T09:05:00");
+
+        doThrow(new RuntimeException("模拟设备状态日志写入失败"))
+                .when(deviceStatusLogMapperSpy)
+                .insert(any(DeviceStatusLog.class));
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-28T09:10:00",
+                                  "borrowCheckStatus": "日志失败回滚测试",
+                                  "remark": "事务回滚验证"
+                                }
+                                """))
+                .andExpect(status().isInternalServerError());
+
+        org.junit.jupiter.api.Assertions.assertEquals(0L, countBorrowRecordsByReservationId(reservationId));
+        org.junit.jupiter.api.Assertions.assertEquals("AVAILABLE", deviceMapper.selectById(device.getId()).getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals(0L, countDeviceStatusLogsByDeviceId(device.getId()));
     }
 
     /**
