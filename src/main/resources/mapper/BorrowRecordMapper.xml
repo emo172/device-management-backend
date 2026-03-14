@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.BorrowRecordMapper">
+
+    <!-- 按预约查询唯一借还记录，用于借用确认幂等校验和归还前定位业务记录。 -->
+    <select id="findByReservationId" resultType="com.jhun.backend.entity.BorrowRecord">
+        SELECT id, reservation_id, device_id, user_id, borrow_time, return_time, expected_return_time, status,
+               borrow_check_status, return_check_status, remark, operator_id, return_operator_id, created_at, updated_at
+        FROM borrow_record
+        WHERE reservation_id = #{reservationId}
+        LIMIT 1
+    </select>
+
+    <!--
+        查询借还记录列表。
+        当 userId 传入时，仅返回该用户本人记录，用于普通用户“只能查看本人记录”的边界；
+        当 userId 为空时，返回管理端可见的全部记录。
+    -->
+    <select id="findByConditions" resultType="com.jhun.backend.entity.BorrowRecord">
+        SELECT id, reservation_id, device_id, user_id, borrow_time, return_time, expected_return_time, status,
+               borrow_check_status, return_check_status, remark, operator_id, return_operator_id, created_at, updated_at
+        FROM borrow_record
+        WHERE 1 = 1
+          <if test="status != null and status != ''">
+              AND status = #{status}
+          </if>
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+        ORDER BY borrow_time DESC, created_at DESC
+    </select>
+</mapper>
