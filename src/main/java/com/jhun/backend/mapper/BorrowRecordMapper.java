@@ -17,5 +17,19 @@ public interface BorrowRecordMapper extends BaseMapper<BorrowRecord> {
 
     BorrowRecord findByReservationId(@Param("reservationId") String reservationId);
 
-    List<BorrowRecord> findByConditions(@Param("status") String status, @Param("userId") String userId);
+    List<BorrowRecord> findPageByConditions(
+            @Param("status") String status,
+            @Param("userId") String userId,
+            @Param("limit") int limit,
+            @Param("offset") int offset);
+
+    long countByConditions(@Param("status") String status, @Param("userId") String userId);
+
+    int updateReturnIfInBorrowedState(
+            @Param("id") String id,
+            @Param("returnTime") java.time.LocalDateTime returnTime,
+            @Param("returnCheckStatus") String returnCheckStatus,
+            @Param("remark") String remark,
+            @Param("returnOperatorId") String returnOperatorId,
+            @Param("updatedAt") java.time.LocalDateTime updatedAt);
 }

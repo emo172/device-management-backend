@@ -17,6 +17,7 @@ import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -86,9 +87,13 @@ public class BorrowServiceImpl implements BorrowService {
         borrowRecord.setOperatorId(operatorId);
         borrowRecord.setCreatedAt(LocalDateTime.now());
         borrowRecord.setUpdatedAt(LocalDateTime.now());
-        borrowRecordMapper.insert(borrowRecord);
+        try {
+            borrowRecordMapper.insert(borrowRecord);
+        } catch (DataIntegrityViolationException exception) {
+            throw new BusinessException("同一预约已生成借还记录");
+        }
 
-        updateDeviceStatus(device, "BORROWED", "借用确认", operatorId);
+        updateDeviceStatus(device, "AVAILABLE", "BORROWED", "借用确认", operatorId);
         return toResponse(borrowRecord);
     }
 
@@ -113,19 +118,30 @@ public class BorrowServiceImpl implements BorrowService {
             throw new BusinessException("归还时间不能早于借用时间");
         }
 
+        String mergedRemark = mergeReturnRemark(borrowRecord.getRemark(), request == null ? null : request.remark());
+        int updatedRows = borrowRecordMapper.updateReturnIfInBorrowedState(
+                borrowRecordId,
+                returnTime,
+                request == null ? null : request.returnCheckStatus(),
+                mergedRemark,
+                operatorId,
+                LocalDateTime.now());
+        if (updatedRows != 1) {
+            throw new BusinessException("当前借还记录不处于可归还状态");
+        }
+
         borrowRecord.setReturnTime(returnTime);
         borrowRecord.setReturnCheckStatus(request == null ? null : request.returnCheckStatus());
         borrowRecord.setReturnOperatorId(operatorId);
         borrowRecord.setStatus("RETURNED");
-        borrowRecord.setRemark(mergeReturnRemark(borrowRecord.getRemark(), request == null ? null : request.remark()));
+        borrowRecord.setRemark(mergedRemark);
         borrowRecord.setUpdatedAt(LocalDateTime.now());
-        borrowRecordMapper.updateById(borrowRecord);
 
         Device device = mustFindDevice(borrowRecord.getDeviceId());
         if (!"BORROWED".equals(device.getStatus())) {
             throw new BusinessException("设备当前不处于借出状态，无法确认归还");
         }
-        updateDeviceStatus(device, "AVAILABLE", "归还确认", operatorId);
+        updateDeviceStatus(device, "BORROWED", "AVAILABLE", "归还确认", operatorId);
         return toResponse(borrowRecord);
     }
 
@@ -138,15 +154,15 @@ public class BorrowServiceImpl implements BorrowService {
      */
     public BorrowRecordPageResponse listBorrowRecords(String userId, String role, int page, int size, String status) {
         String visibleUserId = "USER".equals(role) ? userId : null;
-        List<BorrowRecord> allRecords = borrowRecordMapper.findByConditions(status, visibleUserId);
         int safePage = Math.max(page, 1);
         int safeSize = Math.max(size, 1);
-        int fromIndex = Math.max((safePage - 1) * safeSize, 0);
-        int toIndex = Math.min(fromIndex + safeSize, allRecords.size());
-        List<BorrowRecordResponse> records = fromIndex >= allRecords.size()
-                ? List.of()
-                : allRecords.subList(fromIndex, toIndex).stream().map(this::toResponse).toList();
-        return new BorrowRecordPageResponse(allRecords.size(), records);
+        int offset = (safePage - 1) * safeSize;
+        long total = borrowRecordMapper.countByConditions(status, visibleUserId);
+        List<BorrowRecordResponse> records = borrowRecordMapper.findPageByConditions(status, visibleUserId, safeSize, offset)
+                .stream()
+                .map(this::toResponse)
+                .toList();
+        return new BorrowRecordPageResponse(total, records);
     }
 
     @Override
@@ -183,11 +199,14 @@ public class BorrowServiceImpl implements BorrowService {
      * 借还模块不能只改 device.status，因为那样会丢失是谁、因为什么做了状态切换；
      * 因此每次借出/归还都同步写入 device_status_log，确保后续审计可以完整还原状态演进过程。
      */
-    private void updateDeviceStatus(Device device, String newStatus, String reason, String operatorId) {
+    private void updateDeviceStatus(Device device, String expectedStatus, String newStatus, String reason, String operatorId) {
         String oldStatus = device.getStatus();
+        int updatedRows = deviceMapper.updateStatusIfCurrent(device.getId(), expectedStatus, newStatus, reason);
+        if (updatedRows != 1) {
+            throw new BusinessException("设备状态已变化，请刷新后重试");
+        }
         device.setStatus(newStatus);
         device.setStatusChangeReason(reason);
-        deviceMapper.updateById(device);
         saveStatusLog(device.getId(), oldStatus, newStatus, reason, operatorId);
     }
 

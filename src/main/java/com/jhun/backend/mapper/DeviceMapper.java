@@ -15,4 +15,10 @@ public interface DeviceMapper extends BaseMapper<Device> {
     Device findByDeviceNumber(@Param("deviceNumber") String deviceNumber);
 
     List<Device> findActiveDevices(@Param("categoryId") String categoryId);
+
+    int updateStatusIfCurrent(
+            @Param("deviceId") String deviceId,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("newStatus") String newStatus,
+            @Param("reason") String reason);
 }

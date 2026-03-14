@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jhun.backend.config.security.JwtTokenProvider;
+import com.jhun.backend.dto.borrow.ConfirmBorrowRequest;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
 import com.jhun.backend.entity.Role;
@@ -19,9 +20,17 @@ import com.jhun.backend.mapper.DeviceStatusLogMapper;
 import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
+import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -62,6 +71,8 @@ class BorrowControllerIntegrationTest {
     private PasswordEncoder passwordEncoder;
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
+    @Autowired
+    private BorrowService borrowService;
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
@@ -222,6 +233,37 @@ class BorrowControllerIntegrationTest {
     }
 
     /**
+     * 验证并发重复确认借用时只能有一个成功，保护唯一借还记录、设备状态和状态日志不会被双写。
+     */
+    @Test
+    void shouldAllowOnlyOneSuccessWhenConfirmBorrowConcurrently() throws Exception {
+        User user = createUser("brw-u-9", "borrow-user-9@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-9", "borrow-device-admin-9@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-27T09:00:00", "2026-03-27T11:00:00", "2026-03-27T09:05:00");
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executorService = Executors.newFixedThreadPool(2);
+
+        try {
+            Callable<Boolean> task = () -> runConcurrentBorrowAttempt(reservationId, deviceAdmin.getId(), ready, start);
+            Future<Boolean> first = executorService.submit(task);
+            Future<Boolean> second = executorService.submit(task);
+            org.junit.jupiter.api.Assertions.assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+
+            int successCount = (first.get() ? 1 : 0) + (second.get() ? 1 : 0);
+            org.junit.jupiter.api.Assertions.assertEquals(1, successCount);
+            org.junit.jupiter.api.Assertions.assertEquals(1L, countBorrowRecordsByReservationId(reservationId));
+            org.junit.jupiter.api.Assertions.assertEquals(1L, countDeviceStatusLogsByDeviceId(device.getId()));
+            org.junit.jupiter.api.Assertions.assertEquals("BORROWED", deviceMapper.selectById(device.getId()).getStatus());
+        } finally {
+            executorService.shutdownNow();
+        }
+    }
+
+    /**
      * 验证设备管理员确认归还后，借还记录会闭环为已归还，且设备才允许回到 AVAILABLE。
      */
     @Test
@@ -308,6 +350,60 @@ class BorrowControllerIntegrationTest {
                                 }
                                 """))
                 .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证重复归还不会二次成功，保护 borrow_record 和 device_status_log 不会在同一条记录上重复闭环。
+     */
+    @Test
+    void shouldRejectDuplicateReturnConfirmation() throws Exception {
+        User user = createUser("brw-u-10", "borrow-user-10@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-10", "borrow-device-admin-10@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-27T13:00:00", "2026-03-27T15:00:00", "2026-03-27T13:05:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-27T13:10:00",
+                                  "borrowCheckStatus": "首次借出",
+                                  "remark": "准备归还"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        BorrowRecordRow borrowRecord = loadBorrowRecordByReservationId(reservationId);
+
+        mockMvc.perform(post("/api/borrow-records/{borrowRecordId}/confirm-return", borrowRecord.id())
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "returnTime": "2026-03-27T14:30:00",
+                                  "returnCheckStatus": "首次归还",
+                                  "remark": "第一次归还"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        long statusLogCountAfterFirstReturn = countDeviceStatusLogsByDeviceId(device.getId());
+
+        mockMvc.perform(post("/api/borrow-records/{borrowRecordId}/confirm-return", borrowRecord.id())
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "returnTime": "2026-03-27T14:40:00",
+                                  "returnCheckStatus": "重复归还",
+                                  "remark": "第二次归还"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        org.junit.jupiter.api.Assertions.assertEquals(statusLogCountAfterFirstReturn, countDeviceStatusLogsByDeviceId(device.getId()));
     }
 
     /**
@@ -467,6 +563,41 @@ class BorrowControllerIntegrationTest {
                         """,
                 (rs, rowNum) -> mapBorrowRecordRow(rs),
                 reservationId).stream().findFirst().orElse(null);
+    }
+
+    private boolean runConcurrentBorrowAttempt(
+            String reservationId,
+            String operatorId,
+            CountDownLatch ready,
+            CountDownLatch start) throws Exception {
+        ready.countDown();
+        org.junit.jupiter.api.Assertions.assertTrue(start.await(5, TimeUnit.SECONDS));
+        try {
+            borrowService.confirmBorrow(
+                    reservationId,
+                    operatorId,
+                    "DEVICE_ADMIN",
+                    new ConfirmBorrowRequest(LocalDateTime.of(2026, 3, 27, 9, 10), "并发借出校验", "并发借用测试"));
+            return true;
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    private long countBorrowRecordsByReservationId(String reservationId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM borrow_record WHERE reservation_id = ?",
+                Long.class,
+                reservationId);
+        return count == null ? 0L : count;
+    }
+
+    private long countDeviceStatusLogsByDeviceId(String deviceId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM device_status_log WHERE device_id = ?",
+                Long.class,
+                deviceId);
+        return count == null ? 0L : count;
     }
 
     private BorrowRecordRow mapBorrowRecordRow(ResultSet resultSet) throws SQLException {

@@ -22,4 +22,17 @@
           </if>
         ORDER BY created_at DESC
     </select>
+
+    <!--
+        仅当设备当前状态与预期状态一致时才允许切换状态，
+        用受影响行数作为 CAS 结果，避免并发借出/归还时重复写状态日志或覆盖其他事务的状态流转。
+    -->
+    <update id="updateStatusIfCurrent">
+        UPDATE device
+        SET status = #{newStatus},
+            status_change_reason = #{reason},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{deviceId}
+          AND status = #{expectedStatus}
+    </update>
 </mapper>
