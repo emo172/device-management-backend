@@ -1,6 +1,8 @@
 spring:
   datasource:
-    url: jdbc:h2:mem:device_management_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    # 为每个 Spring 测试上下文分配独立的 H2 内存库名，避免 @MockitoSpyBean 等场景触发的新上下文
+    # 复用固定 mem 库时，前一个上下文残留的表会让后一个上下文重新执行 schema.sql 直接失败。
+    url: jdbc:h2:mem:${random.uuid};MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
     username: sa
     password:
     driver-class-name: org.h2.Driver
