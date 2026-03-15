@@ -1,11 +1,13 @@
 package com.jhun.backend.config.security;
 
+import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.time.LocalDateTime;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -22,9 +24,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final AuthRuntimeStateSupport authRuntimeStateSupport;
 
-    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
+    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider, AuthRuntimeStateSupport authRuntimeStateSupport) {
         this.jwtTokenProvider = jwtTokenProvider;
+        this.authRuntimeStateSupport = authRuntimeStateSupport;
     }
 
     @Override
@@ -50,6 +54,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     claims.getSubject(),
                     claims.get("username", String.class),
                     claims.get("role", String.class));
+
+            /*
+             * 访问令牌是当前请求链路中最稳定、且无需额外存储前置就能识别的会话键。
+             * 这里在鉴权成功后刷新其最近活跃时间，让 C-10 真正按“请求空闲窗口”治理会话；
+             * 但即使没有对应快照，也不会阻断本次请求，从而保持现有 JWT 测试基线不变。
+             */
+            authRuntimeStateSupport.touchOrCreateSession(token, claims.getSubject(), LocalDateTime.now());
+
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(principal, token, principal.getAuthorities());
             authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));

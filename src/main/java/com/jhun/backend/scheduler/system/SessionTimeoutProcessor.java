@@ -1,21 +1,29 @@
 package com.jhun.backend.scheduler.system;
 
+import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
  * 会话超时检查任务。
  * <p>
- * 当前阶段先建立定时任务骨架，对应计划中的 C-10，后续接入真实会话存储后在此执行超时清理。
+ * 当前阶段负责清理认证运行时中的空闲会话快照，对应计划中的 C-10。
+ * 该任务只治理观测型会话索引，不把会话快照存在变成访问接口的硬前置。
  */
 @Component
 public class SessionTimeoutProcessor {
 
+    private final AuthRuntimeStateSupport authRuntimeStateSupport;
+
+    public SessionTimeoutProcessor(AuthRuntimeStateSupport authRuntimeStateSupport) {
+        this.authRuntimeStateSupport = authRuntimeStateSupport;
+    }
+
     /**
-     * 预留会话超时检查入口，对应任务编号 C-10。
+     * 执行 C-10 会话空闲清理。
      */
     @Scheduled(cron = "0 */10 * * * ?")
     public void processSessionTimeout() {
-        // 当前阶段只建立调度入口，具体会话超时逻辑后续接入。
+        authRuntimeStateSupport.cleanupTimedOutSessions();
     }
 }
