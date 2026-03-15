@@ -364,14 +364,64 @@ class DeviceControllerIntegrationTest {
 
         mockMvc.perform(put("/api/devices/{id}/status", deviceId)
                         .header("Authorization", token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
                                 {
                                   "status": "MAINTENANCE",
                                   "reason": "不应允许手工从借出改到维修"
                                 }
                                 """))
                 .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证通用编辑接口不能夹带 status 绕过专用状态更新入口，
+     * 防止设备管理员借由基础信息编辑直接破坏 BORROWED -> AVAILABLE 的正式归还闭环。
+     */
+    @Test
+    void shouldRejectStatusMutationThroughGeneralUpdateEndpoint() throws Exception {
+        User deviceAdmin = createDeviceAdminUser("device-admin-7", "device-admin-7@example.com");
+        String token = bearer(deviceAdmin, "DEVICE_ADMIN");
+        String categoryName = "通用更新禁止改状态";
+        createCategory(token, categoryName);
+
+        MvcResult createResult = mockMvc.perform(post("/api/devices")
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "绕过状态设备",
+                                  "deviceNumber": "DEV-EDIT-STATUS-001",
+                                  "categoryName": "%s",
+                                  "status": "BORROWED",
+                                  "description": "验证通用编辑不能改状态",
+                                  "location": "ROOM-2"
+                                }
+                                """.formatted(categoryName)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String deviceId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
+
+        mockMvc.perform(put("/api/devices/{id}", deviceId)
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "绕过状态设备-更新后",
+                                  "categoryName": "%s",
+                                  "status": "AVAILABLE",
+                                  "description": "试图通过通用编辑改回可借",
+                                  "location": "ROOM-3"
+                                }
+                                """.formatted(categoryName)))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(get("/api/devices/{id}", deviceId)
+                        .header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("BORROWED"))
+                .andExpect(jsonPath("$.data.name").value("绕过状态设备"));
     }
 
     private void createCategory(String token, String name) throws Exception {

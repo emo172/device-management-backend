@@ -95,9 +95,16 @@ public class DeviceServiceImpl implements DeviceService {
     public DeviceResponse updateDevice(String deviceId, UpdateDeviceRequest request) {
         Device device = mustFindDevice(deviceId);
         DeviceCategory category = findCategoryByName(request.categoryName());
+        /*
+         * 通用编辑接口只负责设备主数据，不允许借道修改生命周期状态。
+         * 前端即使把当前 status 一并回传，也只能与现状保持一致；
+         * 一旦尝试改成其他状态，必须改走 `/api/devices/{id}/status`，以复用专用状态机校验与维修通知联动。
+         */
+        if (request.status() != null && !request.status().equals(device.getStatus())) {
+            throw new BusinessException("设备状态只能通过专用状态接口更新");
+        }
         device.setName(request.name());
         device.setCategoryId(category.getId());
-        device.setStatus(request.status());
         device.setDescription(request.description());
         device.setLocation(request.location());
         deviceMapper.updateById(device);
