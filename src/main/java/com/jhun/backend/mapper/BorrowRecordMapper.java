@@ -2,6 +2,7 @@ package com.jhun.backend.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.jhun.backend.entity.BorrowRecord;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -25,11 +26,23 @@ public interface BorrowRecordMapper extends BaseMapper<BorrowRecord> {
 
     long countByConditions(@Param("status") String status, @Param("userId") String userId);
 
+    /** 查询已超过预计归还时间、但尚未写入逾期状态的借还记录。 */
+    List<BorrowRecord> findBorrowedExpectedReturnBefore(@Param("referenceTime") LocalDateTime referenceTime);
+
+    /** 查询已经处于 OVERDUE 且尚未归还的借还记录，用于持续刷新逾期时长与升级冻结等级。 */
+    List<BorrowRecord> findActiveOverdueRecords();
+
+    /** 仅当记录仍处于 BORROWED 时才切换为 OVERDUE，避免重复检测时双写状态。 */
+    int markOverdueIfBorrowed(@Param("id") String id, @Param("updatedAt") LocalDateTime updatedAt);
+
+    /** 统计用户当前仍处于 OVERDUE 的借还记录数量，用于 C-07 自动释放限制。 */
+    long countActiveOverdueByUserId(@Param("userId") String userId);
+
     int updateReturnIfInBorrowedState(
             @Param("id") String id,
-            @Param("returnTime") java.time.LocalDateTime returnTime,
+            @Param("returnTime") LocalDateTime returnTime,
             @Param("returnCheckStatus") String returnCheckStatus,
             @Param("remark") String remark,
             @Param("returnOperatorId") String returnOperatorId,
-            @Param("updatedAt") java.time.LocalDateTime updatedAt);
+            @Param("updatedAt") LocalDateTime updatedAt);
 }

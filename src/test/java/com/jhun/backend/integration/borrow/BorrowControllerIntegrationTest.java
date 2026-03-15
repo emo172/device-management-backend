@@ -355,6 +355,54 @@ class BorrowControllerIntegrationTest {
     }
 
     /**
+     * 验证逾期中的借还记录仍然可以通过正式归还流程闭环，防止 OVERDUE 记录被误当作不可归还的死状态。
+     */
+    @Test
+    void shouldConfirmReturnSuccessfullyWhenBorrowRecordIsOverdue() throws Exception {
+        User user = createUser("brw-u-ovr", "borrow-user-overdue-return@example.com", "USER");
+        User deviceAdmin = createUser("brw-da-ovr", "borrow-device-admin-overdue-return@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        String reservationId = createCheckedInReservation(user, deviceAdmin, device,
+                "2026-03-29T09:00:00", "2026-03-29T11:00:00", "2026-03-29T09:10:00");
+
+        mockMvc.perform(post("/api/borrow-records/{reservationId}/confirm-borrow", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "borrowTime": "2026-03-29T09:20:00",
+                                  "borrowCheckStatus": "借出后将转逾期",
+                                  "remark": "逾期归还测试"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        BorrowRecordRow borrowRecord = loadBorrowRecordByReservationId(reservationId);
+        jdbcTemplate.update(
+                "UPDATE borrow_record SET status = 'OVERDUE', updated_at = ? WHERE id = ?",
+                LocalDateTime.of(2026, 3, 29, 11, 30, 0),
+                borrowRecord.id());
+
+        mockMvc.perform(post("/api/borrow-records/{borrowRecordId}/confirm-return", borrowRecord.id())
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "returnTime": "2026-03-29T11:40:00",
+                                  "returnCheckStatus": "逾期后正常归还",
+                                  "remark": "逾期记录已闭环"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RETURNED"));
+
+        BorrowRecordRow refreshedBorrowRecord = loadBorrowRecordByReservationId(reservationId);
+        Device refreshedDevice = deviceMapper.selectById(device.getId());
+        org.junit.jupiter.api.Assertions.assertEquals("RETURNED", refreshedBorrowRecord.status());
+        org.junit.jupiter.api.Assertions.assertEquals("AVAILABLE", refreshedDevice.getStatus());
+    }
+
+    /**
      * 验证 SYSTEM_ADMIN 不能确认归还，避免越权把设备直接从 BORROWED 恢复为 AVAILABLE。
      */
     @Test

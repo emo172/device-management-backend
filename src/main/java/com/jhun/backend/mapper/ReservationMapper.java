@@ -37,4 +37,9 @@ public interface ReservationMapper extends BaseMapper<Reservation> {
     List<Reservation> findApprovedStartingBetween(
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
+
+    /** 查询指定设备未来审批通过的预约，用于设备维修通知。 */
+    List<Reservation> findApprovedFutureReservationsByDeviceId(
+            @Param("deviceId") String deviceId,
+            @Param("start") LocalDateTime start);
 }
