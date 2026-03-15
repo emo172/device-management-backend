@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.OverdueRecordMapper">
+
+    <!-- 按借还记录定位唯一逾期记录，用于逾期检测幂等、时长刷新和通知补发。 -->
+    <select id="findByBorrowRecordId" resultType="com.jhun.backend.entity.OverdueRecord">
+        SELECT id, borrow_record_id, user_id, device_id, overdue_hours, overdue_days, processing_status,
+               processing_method, processing_remark, processor_id, processing_time, compensation_amount,
+               notification_sent, created_at, updated_at
+        FROM overdue_record
+        WHERE borrow_record_id = #{borrowRecordId}
+        LIMIT 1
+    </select>
+
+    <!--
+        查询逾期记录分页列表。
+        userId 为空时返回管理角色全量视角；userId 非空时只返回该用户本人记录，
+        以落实“普通用户只能看本人逾期记录”的权限边界。
+    -->
+    <select id="findPageByConditions" resultType="com.jhun.backend.entity.OverdueRecord">
+        SELECT id, borrow_record_id, user_id, device_id, overdue_hours, overdue_days, processing_status,
+               processing_method, processing_remark, processor_id, processing_time, compensation_amount,
+               notification_sent, created_at, updated_at
+        FROM overdue_record
+        WHERE 1 = 1
+          <if test="processingStatus != null and processingStatus != ''">
+              AND processing_status = #{processingStatus}
+          </if>
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+        ORDER BY created_at DESC, overdue_hours DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 统计逾期记录总数，避免列表接口先查全量再在内存分页。 -->
+    <select id="countByConditions" resultType="long">
+        SELECT COUNT(1)
+        FROM overdue_record
+        WHERE 1 = 1
+          <if test="processingStatus != null and processingStatus != ''">
+              AND processing_status = #{processingStatus}
+          </if>
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+    </select>
+
+    <!--
+        查询尚未发送正式逾期提醒、且对应借还记录仍处于 OVERDUE 的记录。
+        历史逾期记录即使保留在 overdue_record 中，只要 borrow_record 已经归还，就不应继续收到 OVERDUE_WARNING。
+    -->
+    <select id="findNotificationPendingRecords" resultType="com.jhun.backend.entity.OverdueRecord">
+        SELECT id, borrow_record_id, user_id, device_id, overdue_hours, overdue_days, processing_status,
+               processing_method, processing_remark, processor_id, processing_time, compensation_amount,
+               notification_sent, created_at, updated_at
+        FROM overdue_record
+        WHERE notification_sent = 0
+          AND EXISTS (
+              SELECT 1
+              FROM borrow_record b
+              WHERE b.id = overdue_record.borrow_record_id
+                AND b.status = 'OVERDUE'
+                AND b.return_time IS NULL
+          )
+        ORDER BY created_at ASC
+    </select>
+
+    <!--
+        更新检测出的逾期时长快照。
+        C-05 会重复扫描同一条已逾期借还记录，因此需要持续刷新 overdue_hours / overdue_days，
+        让后续阈值升级和统计读取都基于最新时长，而不是首次检测时的旧快照。
+    -->
+    <update id="updateDuration">
+        UPDATE overdue_record
+        SET overdue_hours = #{overdueHours},
+            overdue_days = #{overdueDays},
+            updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 标记正式逾期提醒是否已发送，避免 C-06 对同一条逾期记录重复发通知。 -->
+    <update id="updateNotificationSent">
+        UPDATE overdue_record
+        SET notification_sent = #{notificationSent},
+            updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        仅当 notification_sent 仍为 0 时才标记为已发送。
+        C-06 任务先占有发送资格，再落通知记录，借助受影响行数避免并发重复发送 OVERDUE_WARNING。
+    -->
+    <update id="updateNotificationSentIfPending">
+        UPDATE overdue_record
+        SET notification_sent = #{notificationSent},
+            updated_at = #{updatedAt}
+        WHERE id = #{id}
+          AND notification_sent = 0
+          AND EXISTS (
+              SELECT 1
+              FROM borrow_record b
+              WHERE b.id = overdue_record.borrow_record_id
+                AND b.status = 'OVERDUE'
+                AND b.return_time IS NULL
+          )
+    </update>
+
+    <!--
+        写入设备管理员处理结果。
+        仅允许从 PENDING 更新到 PROCESSED，避免同一条逾期记录被重复覆盖，破坏审计责任链。
+    -->
+    <update id="updateProcessingResult">
+        UPDATE overdue_record
+        SET processing_status = 'PROCESSED',
+            processing_method = #{processingMethod},
+            processing_remark = #{processingRemark},
+            processor_id = #{processorId},
+            processing_time = #{processingTime},
+            compensation_amount = #{compensationAmount},
+            updated_at = #{updatedAt}
+        WHERE id = #{id}
+          AND processing_status = 'PENDING'
+    </update>
+</mapper>

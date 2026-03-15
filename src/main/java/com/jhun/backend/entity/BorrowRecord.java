@@ -43,7 +43,7 @@ public class BorrowRecord {
     @TableField("expected_return_time")
     private LocalDateTime expectedReturnTime;
 
-    /** 借还状态，当前阶段使用 BORROWED 与 RETURNED，后续逾期模块会补充 OVERDUE。 */
+    /** 借还状态：BORROWED、RETURNED、OVERDUE；其中 OVERDUE 由逾期治理任务基于 expected_return_time 自动识别。 */
     private String status;
 
     /** 借出前检查记录，用于保留设备交接时的状态说明。 */
