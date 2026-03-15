@@ -6,6 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import java.time.LocalDateTime;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -41,6 +45,24 @@ class AuthRuntimeStateSupportTest {
     }
 
     /**
+     * 验证验证码和刷新令牌在“当前时间恰好等于过期时间”时也会被视为过期，
+     * 避免边界时刻比业务预期多放行一次。
+     */
+    @Test
+    void shouldTreatExpireAtEqualsReferenceTimeAsExpired() {
+        AuthRuntimeStateSupport support = new AuthRuntimeStateSupport();
+        LocalDateTime now = LocalDateTime.of(2026, 3, 20, 3, 0);
+
+        support.storeVerificationCode("boundary@example.com", "111111", now);
+        support.recordRefreshToken("boundary-token", "user-1", now);
+
+        support.cleanupExpiredAuthArtifacts(now);
+
+        assertFalse(support.hasVerificationCode("boundary@example.com"));
+        assertFalse(support.hasRefreshToken("boundary-token"));
+    }
+
+    /**
      * 验证 C-10 只清理超时会话快照，不把仍在活跃窗口内的会话误删。
      */
     @Test
@@ -72,5 +94,39 @@ class AuthRuntimeStateSupportTest {
 
         assertTrue(support.hasSession("access-token-1"));
         assertEquals(touchedTime, support.getSessionState("access-token-1").lastAccessAt());
+    }
+
+    /**
+     * 验证并发失败登录会被完整累加，避免“先读后写”导致失败次数被覆盖，进而延后锁定触发时机。
+     */
+    @Test
+    void shouldIncrementLoginFailureAtomicallyUnderConcurrency() throws Exception {
+        AuthRuntimeStateSupport support = new AuthRuntimeStateSupport();
+        int concurrentAttempts = 20;
+        LocalDateTime lockedUntil = LocalDateTime.of(2026, 3, 20, 10, 30);
+        CountDownLatch readyLatch = new CountDownLatch(concurrentAttempts);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        ExecutorService executorService = Executors.newFixedThreadPool(concurrentAttempts);
+
+        try {
+            for (int index = 0; index < concurrentAttempts; index++) {
+                executorService.submit(() -> {
+                    readyLatch.countDown();
+                    startLatch.await();
+                    support.incrementLoginFailure("concurrent-account", 5, lockedUntil);
+                    return null;
+                });
+            }
+
+            assertTrue(readyLatch.await(5, TimeUnit.SECONDS));
+            startLatch.countDown();
+        } finally {
+            executorService.shutdown();
+            assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        AuthRuntimeStateSupport.LoginFailureState state = support.getLoginFailureState("concurrent-account");
+        assertEquals(concurrentAttempts, state.failureCount());
+        assertEquals(lockedUntil, state.lockedUntil());
     }
 }

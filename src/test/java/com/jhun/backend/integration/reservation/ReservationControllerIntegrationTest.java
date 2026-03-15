@@ -24,6 +24,7 @@ import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -524,6 +525,81 @@ class ReservationControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.data.cancelReason").value("后台协助取消"));
+    }
+
+    /**
+     * 验证已完成签到的预约即使尚未到开始时间，也不能再被管理员取消，
+     * 防止签到后的预约从借用确认链路被直接回滚成取消状态。
+     */
+    @Test
+    void shouldRejectCancelReservationAfterCheckInEvenBeforeStart() throws Exception {
+        User user = createUser("rsv-cancel-ci-u1", "reserve-cancel-checkin-user-1@example.com", "USER");
+        User deviceAdmin = createUser("rsv-cancel-ci-da1", "reserve-cancel-checkin-da1@example.com", "DEVICE_ADMIN");
+        User systemAdmin = createUser("rsv-cancel-ci-sa1", "reserve-cancel-checkin-sa1@example.com", "SYSTEM_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        LocalDateTime checkInTime = alignedNow();
+        LocalDateTime startTime = checkInTime.plusMinutes(20);
+        String reservationId = createApprovedReservation(user, deviceAdmin, device, formatTime(startTime), formatTime(startTime.plusHours(1)));
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "%s"
+                                }
+                                """.formatted(formatTime(checkInTime))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.signStatus").value("CHECKED_IN"));
+
+        mockMvc.perform(post("/api/reservations/{id}/cancel", reservationId)
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "签到后尝试取消"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("已签到预约不可取消"));
+    }
+
+    /**
+     * 验证原子取消 SQL 本身也会拦住已签到预约，防止后续只保住服务层分支测试、
+     * 却把 Mapper XML 中的签到条件误删后重新引入数据库覆盖风险。
+     */
+    @Test
+    void shouldNotCancelCheckedInReservationThroughAtomicSql() throws Exception {
+        User user = createUser("rsv-sql-ci-u1", "reserve-sql-checkin-user-1@example.com", "USER");
+        User deviceAdmin = createUser("rsv-sql-ci-da1", "reserve-sql-checkin-da1@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        LocalDateTime checkInTime = alignedNow();
+        LocalDateTime startTime = checkInTime.plusMinutes(20);
+        String reservationId = createApprovedReservation(user, deviceAdmin, device, formatTime(startTime), formatTime(startTime.plusHours(1)));
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "%s"
+                                }
+                                """.formatted(formatTime(checkInTime))))
+                .andExpect(status().isOk());
+
+        LocalDateTime now = alignedNow();
+        int affectedRows = reservationMapper.cancelReservationSafely(
+                reservationId,
+                "SQL 守卫校验",
+                now,
+                now,
+                now,
+                List.of("PENDING_DEVICE_APPROVAL", "PENDING_SYSTEM_APPROVAL", "PENDING_MANUAL", "APPROVED"));
+
+        var reservation = reservationMapper.selectById(reservationId);
+        org.junit.jupiter.api.Assertions.assertEquals(0, affectedRows);
+        org.junit.jupiter.api.Assertions.assertEquals("APPROVED", reservation.getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals("CHECKED_IN", reservation.getSignStatus());
     }
 
     /**

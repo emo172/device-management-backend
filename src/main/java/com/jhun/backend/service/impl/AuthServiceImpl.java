@@ -22,6 +22,7 @@ import com.jhun.backend.service.support.notification.EmailSender;
 import com.jhun.backend.util.UuidUtil;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -186,7 +187,9 @@ public class AuthServiceImpl implements AuthService {
     public void resetPassword(ResetPasswordRequest request) {
         AuthRuntimeStateSupport.VerificationCodeState verificationCodeState =
                 authRuntimeStateSupport.getVerificationCodeState(request.email());
-        if (verificationCodeState == null || verificationCodeState.expireAt().isBefore(LocalDateTime.now())) {
+        LocalDateTime now = LocalDateTime.now();
+        if (verificationCodeState == null
+                || authRuntimeStateSupport.isExpiredAtOrBefore(verificationCodeState.expireAt(), now)) {
             throw new BusinessException("验证码不存在或已过期");
         }
         if (!verificationCodeState.code().equals(request.verificationCode())) {
@@ -209,13 +212,18 @@ public class AuthServiceImpl implements AuthService {
         String accessToken = jwtTokenProvider.createAccessToken(user.getId(), user.getUsername(), roleName);
         String refreshToken = jwtTokenProvider.createRefreshToken(user.getId(), user.getUsername(), roleName);
         LocalDateTime now = LocalDateTime.now();
+        LocalDateTime refreshTokenExpireAt = jwtTokenProvider.parseClaims(refreshToken)
+                .getExpiration()
+                .toInstant()
+                .atZone(ZoneId.systemDefault())
+                .toLocalDateTime();
 
         /*
          * 这里分别记录 refresh token 快照与 access token 对应的会话快照，仅用于运维态清理和问题排查，
          * 不参与受保护接口的令牌校验。会话快照必须与过滤器里用于触达的 access token 保持同一键空间，
          * 否则 C-10 会看到“登录时一套键、访问时另一套键”的并行快照，导致空闲治理口径失真。
          */
-        authRuntimeStateSupport.recordRefreshToken(refreshToken, user.getId(), now.plusDays(7));
+        authRuntimeStateSupport.recordRefreshToken(refreshToken, user.getId(), refreshTokenExpireAt);
         authRuntimeStateSupport.recordSession(accessToken, user.getId(), now, now);
 
         return new LoginResponse(
@@ -265,10 +273,7 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private void recordLoginFailure(String account) {
-        AuthRuntimeStateSupport.LoginFailureState currentState = authRuntimeStateSupport.getLoginFailureState(account);
-        int nextFailureCount = currentState == null ? 1 : currentState.failureCount() + 1;
-        LocalDateTime lockedUntil = nextFailureCount >= MAX_FAILED_LOGIN_ATTEMPTS ? LocalDateTime.now().plusMinutes(30) : null;
-        authRuntimeStateSupport.recordLoginFailure(account, nextFailureCount, lockedUntil);
+        authRuntimeStateSupport.incrementLoginFailure(account, MAX_FAILED_LOGIN_ATTEMPTS, LocalDateTime.now().plusMinutes(30));
     }
 
     private void clearLoginFailure(String account) {

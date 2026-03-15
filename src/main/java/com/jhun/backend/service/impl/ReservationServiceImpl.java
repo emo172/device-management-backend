@@ -48,6 +48,18 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class ReservationServiceImpl implements ReservationService {
 
+    /**
+     * 预约取消允许命中的活动状态集合。
+     * <p>
+     * 只有这些仍可能占用时间窗口、且尚未进入终态的预约才允许继续尝试取消；
+     * 具体是否真的能取消，还要再叠加签到状态与开始时间窗口校验。
+     */
+    private static final List<String> CANCELLABLE_ACTIVE_STATUSES = List.of(
+            "PENDING_DEVICE_APPROVAL",
+            "PENDING_SYSTEM_APPROVAL",
+            "PENDING_MANUAL",
+            "APPROVED");
+
     private final ReservationMapper reservationMapper;
     private final DeviceMapper deviceMapper;
     private final DeviceCategoryMapper deviceCategoryMapper;
@@ -125,18 +137,31 @@ public class ReservationServiceImpl implements ReservationService {
      * 取消预约。
      * <p>
      * 普通用户只能在开始前超过 24 小时取消本人预约；管理角色可以处理 24 小时内但尚未开始的预约；
-     * 一旦预约已经开始，则任何角色都不能通过该接口直接取消，以避免破坏签到与借还链路的时间真相。
+     * 一旦预约已经开始或已经完成签到，则任何角色都不能通过该接口直接取消，以避免破坏签到与借还链路的时间真相。
      */
     public ReservationDetailResponse cancelReservation(String reservationId, String operatorId, String role, CancelReservationRequest request) {
         ensureSupportedReservationViewerRole(role);
         Reservation reservation = mustFindReservation(reservationId);
         ensureReservationVisible(reservation, operatorId, role);
-        ensureCancelable(reservation, operatorId, role);
+        LocalDateTime now = LocalDateTime.now();
+        ensureCancelable(reservation, operatorId, role, now);
+        String cancelReason = request == null ? null : request.reason();
+        int updatedRows = reservationMapper.cancelReservationSafely(
+                reservationId,
+                cancelReason,
+                now,
+                now,
+                now,
+                CANCELLABLE_ACTIVE_STATUSES);
+        if (updatedRows == 0) {
+            throw new BusinessException("预约状态已变化，请刷新后重试");
+        }
         reservation.setStatus("CANCELLED");
-        reservation.setCancelReason(request == null ? null : request.reason());
-        reservation.setCancelTime(LocalDateTime.now());
-        reservation.setUpdatedAt(LocalDateTime.now());
-        reservationMapper.updateById(reservation);
+        reservation.setCancelReason(cancelReason);
+        reservation.setCancelTime(now);
+        reservation.setUpdatedAt(now);
+        reservation.setSignStatus("NOT_CHECKED_IN");
+        reservation.setCheckedInAt(null);
         saveNotification(reservation.getUserId(), "RESERVATION_CANCELLED", "IN_APP", "预约已取消", "预约已按规则取消", reservation.getId(), "RESERVATION");
         return toDetailResponse(reservation);
     }
@@ -523,20 +548,27 @@ public class ReservationServiceImpl implements ReservationService {
      * 已取消、已拒绝、已过期等终态预约不能重复取消；开始后任何角色都不能取消；
      * 普通用户额外受“开始前超过 24 小时才能自助取消”的限制，24 小时内必须由管理角色处理。
      */
-    private void ensureCancelable(Reservation reservation, String operatorId, String role) {
+    private void ensureCancelable(Reservation reservation, String operatorId, String role, LocalDateTime referenceTime) {
         if ("CANCELLED".equals(reservation.getStatus())
                 || "REJECTED".equals(reservation.getStatus())
                 || "EXPIRED".equals(reservation.getStatus())) {
             throw new BusinessException("当前预约状态不允许取消");
         }
-        if (reservation.getStartTime().isBefore(LocalDateTime.now()) || reservation.getStartTime().isEqual(LocalDateTime.now())) {
+        /*
+         * 一旦用户已签到，该预约就已经进入借用确认链路：后续应由设备管理员确认借用或转人工处理，
+         * 不能再回到“直接取消”的分支，否则会破坏签到、借还与通知之间的状态真相。
+         */
+        if (reservation.getCheckedInAt() != null || !"NOT_CHECKED_IN".equals(reservation.getSignStatus())) {
+            throw new BusinessException("已签到预约不可取消");
+        }
+        if (reservation.getStartTime().isBefore(referenceTime) || reservation.getStartTime().isEqual(referenceTime)) {
             throw new BusinessException("预约开始后不可取消");
         }
         if ("USER".equals(role)) {
             if (!operatorId.equals(reservation.getUserId())) {
                 throw new BusinessException("只能取消本人预约");
             }
-            if (!reservation.getStartTime().isAfter(LocalDateTime.now().plusHours(24))) {
+            if (!reservation.getStartTime().isAfter(referenceTime.plusHours(24))) {
                 throw new BusinessException("开始前 24 小时内取消需管理员处理");
             }
             return;

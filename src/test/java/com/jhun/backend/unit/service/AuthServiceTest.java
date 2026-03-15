@@ -12,6 +12,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 
 import com.jhun.backend.common.exception.BusinessException;
+import com.jhun.backend.config.security.JwtTokenProvider;
 import com.jhun.backend.dto.auth.LoginRequest;
 import com.jhun.backend.dto.auth.LoginResponse;
 import com.jhun.backend.dto.auth.RegisterRequest;
@@ -20,6 +21,8 @@ import com.jhun.backend.dto.auth.SendResetCodeRequest;
 import com.jhun.backend.service.AuthService;
 import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import com.jhun.backend.service.support.notification.EmailSender;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -45,6 +48,9 @@ class AuthServiceTest {
 
     @Autowired
     private AuthRuntimeStateSupport authRuntimeStateSupport;
+
+    @Autowired
+    private JwtTokenProvider jwtTokenProvider;
 
     @MockitoBean
     private EmailSender emailSender;
@@ -104,6 +110,28 @@ class AuthServiceTest {
 
         assertTrue(authRuntimeStateSupport.hasSession(response.accessToken()));
         assertFalse(authRuntimeStateSupport.hasSession(response.refreshToken()));
+    }
+
+    /**
+     * 验证 refresh token 快照的过期时间与 JWT 自身声明保持一致，避免调度清理口径与真实令牌生命周期漂移。
+     */
+    @Test
+    void shouldStoreRefreshTokenSnapshotWithJwtExpiration() {
+        authService.register(new RegisterRequest(
+                "zhoujiu",
+                "Password123!",
+                "zhoujiu@example.com",
+                "周九",
+                "13800138011"));
+
+        LoginResponse response = authService.login(new LoginRequest("zhoujiu@example.com", "Password123!"));
+        LocalDateTime jwtExpireAt = jwtTokenProvider.parseClaims(response.refreshToken())
+                .getExpiration()
+                .toInstant()
+                .atZone(ZoneId.systemDefault())
+                .toLocalDateTime();
+
+        assertEquals(jwtExpireAt, authRuntimeStateSupport.getRefreshTokenState(response.refreshToken()).expireAt());
     }
 
     /**

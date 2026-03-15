@@ -46,6 +46,19 @@ public interface ReservationMapper extends BaseMapper<Reservation> {
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime);
 
+    /**
+     * 按当前数据库状态原子取消预约。
+     * <p>
+     * 该方法要求预约仍处于可取消状态、尚未签到且尚未开始，避免“先查后改”在并发下覆盖审批、签到等新状态。
+     */
+    int cancelReservationSafely(
+            @Param("reservationId") String reservationId,
+            @Param("cancelReason") String cancelReason,
+            @Param("cancelTime") LocalDateTime cancelTime,
+            @Param("updatedAt") LocalDateTime updatedAt,
+            @Param("currentTime") LocalDateTime currentTime,
+            @Param("allowedStatuses") List<String> allowedStatuses);
+
     /** 查询超过阈值仍处于审核中的预约。 */
     List<Reservation> findAuditPendingBefore(@Param("threshold") LocalDateTime threshold);
 

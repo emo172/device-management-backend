@@ -58,6 +58,25 @@ public class AuthRuntimeStateSupport {
     }
 
     /**
+     * 原子递增登录失败次数。
+     * <p>
+     * 登录失败可能被多个并发请求同时触发；若仍采用“先读后写”的方式，失败次数会被后写请求覆盖，
+     * 进而延后锁定触发时间。这里统一用 `compute` 在状态容器内原子完成累加与锁定计算。
+     *
+     * @param account 登录账号
+     * @param maxFailedAttempts 触发锁定的最大失败次数
+     * @param lockedUntil 达到阈值后的锁定截止时间
+     * @return 更新后的登录失败状态
+     */
+    public LoginFailureState incrementLoginFailure(String account, int maxFailedAttempts, LocalDateTime lockedUntil) {
+        return loginFailureStates.compute(account, (ignored, currentState) -> {
+            int nextFailureCount = currentState == null ? 1 : currentState.failureCount() + 1;
+            LocalDateTime nextLockedUntil = nextFailureCount >= maxFailedAttempts ? lockedUntil : null;
+            return new LoginFailureState(nextFailureCount, nextLockedUntil);
+        });
+    }
+
+    /**
      * 清除登录失败状态。
      *
      * @param account 登录账号
@@ -163,8 +182,8 @@ public class AuthRuntimeStateSupport {
      * @param referenceTime 当前参考时间
      */
     public void cleanupExpiredAuthArtifacts(LocalDateTime referenceTime) {
-        verificationCodeStates.entrySet().removeIf(entry -> entry.getValue().expireAt().isBefore(referenceTime));
-        refreshTokenStates.entrySet().removeIf(entry -> entry.getValue().expireAt().isBefore(referenceTime));
+        verificationCodeStates.entrySet().removeIf(entry -> isExpiredAtOrBefore(entry.getValue().expireAt(), referenceTime));
+        refreshTokenStates.entrySet().removeIf(entry -> isExpiredAtOrBefore(entry.getValue().expireAt(), referenceTime));
         loginFailureStates.entrySet().removeIf(entry -> {
             LocalDateTime lockedUntil = entry.getValue().lockedUntil();
             return lockedUntil != null && !lockedUntil.isAfter(referenceTime);
@@ -199,6 +218,10 @@ public class AuthRuntimeStateSupport {
         return refreshTokenStates.containsKey(refreshToken);
     }
 
+    public RefreshTokenState getRefreshTokenState(String refreshToken) {
+        return refreshTokenStates.get(refreshToken);
+    }
+
     public boolean hasLoginFailureState(String account) {
         return loginFailureStates.containsKey(account);
     }
@@ -209,6 +232,16 @@ public class AuthRuntimeStateSupport {
 
     public SessionState getSessionState(String sessionId) {
         return sessionStates.get(sessionId);
+    }
+
+    /**
+     * 统一定义“到期即失效”的时间边界。
+     * <p>
+     * 认证链路中的验证码、刷新令牌快照都不应在 `referenceTime == expireAt` 的瞬间继续被视为有效，
+     * 否则会形成边界时刻多放行一次的 off-by-one 漏洞。
+     */
+    public boolean isExpiredAtOrBefore(LocalDateTime expireAt, LocalDateTime referenceTime) {
+        return expireAt != null && !expireAt.isAfter(referenceTime);
     }
 
     /** 登录失败状态快照。 */
