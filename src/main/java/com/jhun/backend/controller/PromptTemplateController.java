@@ -7,6 +7,7 @@ import com.jhun.backend.service.PromptTemplateService;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -88,5 +89,20 @@ public class PromptTemplateController {
             @PathVariable("id") String templateId,
             @Valid @RequestBody PromptTemplateRequest request) {
         return Result.success(promptTemplateService.updateTemplate(templateId, request));
+    }
+
+    /**
+     * 删除 Prompt 模板。
+     * <p>
+     * 该接口仅允许系统管理员清理已停用模板；若模板仍处于启用状态，服务层会直接拒绝，
+     * 避免把仍可能被规则降级链路读取的模板直接物理删除。
+     *
+     * @param templateId 待删除模板主键 ID
+     * @return 统一响应包装后的空结果，成功时会产生数据库删除副作用
+     */
+    @DeleteMapping("/{id}")
+    public Result<Void> deleteTemplate(@PathVariable("id") String templateId) {
+        promptTemplateService.deleteTemplate(templateId);
+        return Result.success(null);
     }
 }
