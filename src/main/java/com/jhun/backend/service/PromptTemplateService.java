@@ -52,4 +52,14 @@ public interface PromptTemplateService {
      * @return 更新后的模板响应对象
      */
     PromptTemplateResponse updateTemplate(String templateId, PromptTemplateRequest request);
+
+    /**
+     * 删除 Prompt 模板。
+     * <p>
+     * 为防止运行中模板被直接清空导致读取链路失去可用兜底，启用中的模板必须先停用后再删除；
+     * 只有确认模板存在且当前未启用时，才允许执行物理删除。
+     *
+     * @param templateId 待删除模板主键 ID
+     */
+    void deleteTemplate(String templateId);
 }

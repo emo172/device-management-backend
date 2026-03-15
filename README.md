@@ -12,6 +12,17 @@
 - 统计接口统一读取 `statistics_daily` 预聚合表
 - 通知接口统一使用 `/api/notifications*`，并采用 `IN_APP` / `EMAIL` / `SMS` 三渠道模型
 
+## 通知能力说明
+
+- `GET /api/notifications` 会回传通知页渲染和问题排查需要的关键字段：`status`、`readAt`、`templateVars`、`retryCount`、`relatedId`、`relatedType`，并补充 `sentAt`、`createdAt`
+- `PUT /api/notifications/{id}/read` 与 `PUT /api/notifications/read-all` 只对 `IN_APP` 渠道生效，`EMAIL` / `SMS` 不参与已读状态流转
+- 通知记录按 SQL 新口径保留模板变量、重试次数、关联业务信息，便于审批、逾期、代预约等链路复用
+
+## 系统调度补充
+
+- `C-09 TokenCleanupProcessor` 负责清理认证运行时中的过期验证码、刷新令牌快照和已失效登录锁定记录
+- `C-10 SessionTimeoutProcessor` 负责清理认证运行时中的空闲会话快照，但不会把“存在会话快照”作为访问受保护接口的硬前置
+
 ## 环境要求
 
 - Java 21

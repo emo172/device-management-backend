@@ -15,4 +15,23 @@
         WHERE name = #{name}
         LIMIT 1
     </select>
+
+    <!--
+        查询角色权限树扁平结果。
+        这里必须以 permission 表为主表返回全量权限，再通过左连接 role_permission 标记 selected，
+        否则前端只能看到“已拥有权限”，无法回显未勾选节点并直接完成整棵树渲染。
+    -->
+    <select id="findPermissionTreeRows" resultType="com.jhun.backend.dto.role.RolePermissionTreeRow">
+        SELECT p.module AS module,
+               p.id AS permissionId,
+               p.code AS code,
+               p.name AS name,
+               p.description AS description,
+               CASE WHEN rp.id IS NULL THEN FALSE ELSE TRUE END AS selected
+        FROM permission p
+        LEFT JOIN role_permission rp
+               ON rp.permission_id = p.id
+              AND rp.role_id = #{roleId}
+        ORDER BY p.module ASC, p.code ASC, p.name ASC
+    </select>
 </mapper>

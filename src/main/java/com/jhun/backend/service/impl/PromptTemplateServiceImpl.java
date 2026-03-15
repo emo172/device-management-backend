@@ -107,6 +107,24 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     /**
+     * 删除 Prompt 模板。
+     * <p>
+     * 启用中的模板可能仍被 AI 规则降级链路读取，因此必须先停用再删除；
+     * 只有目标模板存在且当前已停用时，才允许执行物理删除，防止后台误操作直接移除正在生效的模板资产。
+     *
+     * @param templateId 待删除模板主键 ID
+     */
+    @Override
+    @Transactional
+    public void deleteTemplate(String templateId) {
+        PromptTemplate template = mustFindTemplate(templateId);
+        if (template.getIsActive() != null && template.getIsActive() == 1) {
+            throw new BusinessException("启用中的 Prompt 模板不能直接删除，请先停用后再删除");
+        }
+        promptTemplateMapper.deleteById(templateId);
+    }
+
+    /**
      * 校验模板类型是否符合固定业务口径。
      * <p>
      * Prompt 模板类型只能取 `INTENT_RECOGNITION`、`INFO_EXTRACTION`、`RESULT_FEEDBACK`、`CONFLICT_RECOMMENDATION` 四种；

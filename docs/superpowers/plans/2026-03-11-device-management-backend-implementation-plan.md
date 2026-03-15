@@ -232,7 +232,7 @@
 
 **Entry Condition:** 仓库只有最小启动类、最小测试、最小配置与初始 `pom.xml`。
 
-**Exit Condition:** Boot 3.x 基线、`application.yml`、通用层、安全基线、`String UUID` 约束和 SQL 基线都已建立，阶段 0 测试通过。
+**Exit Condition:** Boot 4.x 基线、`application.yml`、通用层、安全基线、`String UUID` 约束和 SQL 基线都已建立，阶段 0 测试通过。
 
 ### Task 1: 对齐 Maven 与配置骨架
 
@@ -277,7 +277,7 @@ Expected: FAIL，提示缺少配置项或 Boot 依赖不匹配
 
 实施要点：
 
-- Spring Boot 父 POM 回落到稳定 `3.x`
+- Spring Boot 父 POM 保持稳定 `4.x` 基线，并与仓库当前依赖口径一致
 - 补齐 Web、Security、Validation、Redis、Mail、MyBatis-Plus、MySQL、JWT、Spring AI 依赖
 - 保留 `com.jhun.backend` 包根与 `DeviceManagementBackendApplication` 类名
 - 配置中至少显式包含：数据源、Redis、JWT、邮件、AI、上传、验证码、预约、逾期等配置组

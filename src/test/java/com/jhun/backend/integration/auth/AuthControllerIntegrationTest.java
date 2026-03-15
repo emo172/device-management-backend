@@ -9,6 +9,8 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +34,9 @@ class AuthControllerIntegrationTest {
 
     @Autowired
     private WebApplicationContext webApplicationContext;
+
+    @Autowired
+    private AuthRuntimeStateSupport authRuntimeStateSupport;
 
     private MockMvc mockMvc;
 
@@ -165,5 +170,48 @@ class AuthControllerIntegrationTest {
         mockMvc.perform(get("/api/auth/me")
                         .header("Authorization", "Bearer " + refreshToken))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * 验证访问受保护接口时会刷新访问令牌对应的最近活跃时间，确保 C-10 的“空闲会话”语义基于真实请求触达。
+     */
+    @Test
+    void shouldTouchSessionWhenAccessingProtectedEndpoint() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "username": "touch-user",
+                                  "password": "Password123!",
+                                  "email": "touch-user@example.com",
+                                  "realName": "会话触达用户",
+                                  "phone": "13800138013"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "account": "touch-user",
+                                  "password": "Password123!"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode loginBody = objectMapper.readTree(loginResult.getResponse().getContentAsString());
+        String accessToken = loginBody.path("data").path("accessToken").asText();
+
+        authRuntimeStateSupport.cleanupTimedOutSessions(LocalDateTime.now().plusMinutes(31), 30);
+
+        mockMvc.perform(get("/api/auth/me")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk());
+
+        authRuntimeStateSupport.cleanupTimedOutSessions(LocalDateTime.now().plusMinutes(29), 30);
+
+        org.junit.jupiter.api.Assertions.assertTrue(authRuntimeStateSupport.hasSession(accessToken));
     }
 }

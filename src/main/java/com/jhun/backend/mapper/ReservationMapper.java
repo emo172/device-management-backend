@@ -13,10 +13,51 @@ import org.apache.ibatis.annotations.Param;
 @Mapper
 public interface ReservationMapper extends BaseMapper<Reservation> {
 
+    /**
+     * 分页查询预约列表。
+     * <p>
+     * 当 userId 传入时仅返回该用户本人预约；当 userId 为空时返回管理视角可见的预约列表。
+     */
+    List<Reservation> findPageByConditions(
+            @Param("userId") String userId,
+            @Param("limit") int limit,
+            @Param("offset") int offset);
+
+    /**
+     * 统计预约列表总数。
+     * <p>
+     * 统计口径必须与列表查询保持一致，否则前端分页会出现总数与当前页不匹配的问题。
+     */
+    long countByConditions(@Param("userId") String userId);
+
     List<Reservation> findConflictingReservations(
             @Param("deviceId") String deviceId,
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime);
+
+    /**
+     * 统计指定设备在给定时间段内的有效预约数量。
+     * <p>
+     * 该方法主要服务并发冲突回归测试，用于确认高并发下数据库最终只落下一条会占用时间段的预约记录，
+     * 防止应用层虽然抛出了冲突异常，但库内仍残留重复数据。
+     */
+    long countActiveReservationsByDeviceAndTimeRange(
+            @Param("deviceId") String deviceId,
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime);
+
+    /**
+     * 按当前数据库状态原子取消预约。
+     * <p>
+     * 该方法要求预约仍处于可取消状态、尚未签到且尚未开始，避免“先查后改”在并发下覆盖审批、签到等新状态。
+     */
+    int cancelReservationSafely(
+            @Param("reservationId") String reservationId,
+            @Param("cancelReason") String cancelReason,
+            @Param("cancelTime") LocalDateTime cancelTime,
+            @Param("updatedAt") LocalDateTime updatedAt,
+            @Param("currentTime") LocalDateTime currentTime,
+            @Param("allowedStatuses") List<String> allowedStatuses);
 
     /** 查询超过阈值仍处于审核中的预约。 */
     List<Reservation> findAuditPendingBefore(@Param("threshold") LocalDateTime threshold);

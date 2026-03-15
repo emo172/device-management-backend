@@ -61,6 +61,14 @@ public class NotificationServiceImpl implements NotificationService {
                 record.getChannel(),
                 record.getTitle(),
                 record.getContent(),
-                record.getReadFlag());
+                record.getStatus(),
+                record.getReadFlag(),
+                record.getReadAt(),
+                record.getTemplateVars(),
+                record.getRetryCount(),
+                record.getRelatedId(),
+                record.getRelatedType(),
+                record.getSentAt(),
+                record.getCreatedAt());
     }
 }

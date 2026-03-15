@@ -1,6 +1,7 @@
 package com.jhun.backend.integration.ai;
 
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -287,6 +288,54 @@ class PromptTemplateControllerIntegrationTest {
     }
 
     /**
+     * 验证系统管理员可以删除已停用模板，避免后台模板库积累无法清理的历史废弃模板。
+     */
+    @Test
+    void shouldAllowSystemAdminToDeleteInactivePromptTemplate() throws Exception {
+        User systemAdmin = createUser("prompt-admin-delete", "prompt-admin-delete@example.com", "SYSTEM_ADMIN");
+        String templateId = insertInactivePromptTemplate(PromptTemplateType.RESULT_FEEDBACK);
+
+        mockMvc.perform(delete("/api/ai/prompts/{id}", templateId)
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN")))
+                .andExpect(status().isOk());
+
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM prompt_template WHERE id = ?",
+                Integer.class,
+                templateId);
+        if (count == null || count != 0) {
+            throw new AssertionError("已停用模板删除后仍然存在");
+        }
+    }
+
+    /**
+     * 验证启用中的模板必须先停用再删除，避免运行中模板被直接物理删除后让读取链路失去兜底配置。
+     */
+    @Test
+    void shouldRejectDeletingActivePromptTemplate() throws Exception {
+        User systemAdmin = createUser("prompt-del-act", "prompt-del-act@example.com", "SYSTEM_ADMIN");
+        String templateId = insertActivePromptTemplate(PromptTemplateType.RESULT_FEEDBACK);
+
+        mockMvc.perform(delete("/api/ai/prompts/{id}", templateId)
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("启用中的 Prompt 模板不能直接删除，请先停用后再删除"));
+    }
+
+    /**
+     * 验证删除不存在模板时会返回明确业务异常，避免后台把“目标不存在”和“删除成功”混淆。
+     */
+    @Test
+    void shouldRejectDeletingNonexistentPromptTemplate() throws Exception {
+        User systemAdmin = createUser("prompt-del-miss", "prompt-del-miss@example.com", "SYSTEM_ADMIN");
+
+        mockMvc.perform(delete("/api/ai/prompts/{id}", UuidUtil.randomUuid())
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Prompt 模板不存在"));
+    }
+
+    /**
      * 创建指定角色的模板测试用户。
      * <p>
      * 该辅助方法统一创建可正常登录的账号，从而把测试焦点锁定在 `SYSTEM_ADMIN` 可管理模板、`USER` 不可越权访问这一权限契约上，
@@ -346,13 +395,36 @@ class PromptTemplateControllerIntegrationTest {
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 templateId,
-                type.name() + "-已启用",
-                type.name() + "_ACTIVE_1",
+                type.name() + "-已启用-" + templateId.substring(0, 8),
+                type.name() + "_ACTIVE_" + templateId.substring(0, 8),
                 "已启用模板",
                 type.name(),
                 "测试同类型启用冲突",
                 "[\"message\"]",
                 1,
+                "1.0");
+        return templateId;
+    }
+
+    /**
+     * 插入一条已停用模板，用于验证后台允许清理不再生效的历史模板。
+     */
+    private String insertInactivePromptTemplate(PromptTemplateType type) {
+        String templateId = UuidUtil.randomUuid();
+        jdbcTemplate.update(
+                """
+                        INSERT INTO prompt_template (
+                            id, name, code, content, type, description, variables, is_active, version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                templateId,
+                type.name() + "-已停用-" + templateId.substring(0, 8),
+                type.name() + "_INACTIVE_" + templateId.substring(0, 8),
+                "已停用模板",
+                type.name(),
+                "测试停用模板删除",
+                "[\"message\"]",
+                0,
                 "1.0");
         return templateId;
     }

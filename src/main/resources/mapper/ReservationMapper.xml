@@ -3,6 +3,39 @@
 <mapper namespace="com.jhun.backend.mapper.ReservationMapper">
 
     <!--
+        查询预约列表。
+        当 userId 传入时，列表只返回当前普通用户自己的预约；管理角色传空时则保留管理端审计所需的全量视角。
+        后台列表优先按创建时间倒序返回最近新建的预约，避免全量历史数据把当前刚创建的联调样本挤出首页，
+        同时再用 start_time 做次级排序，保证创建时间相同的记录仍有稳定顺序。
+    -->
+    <select id="findPageByConditions" resultType="com.jhun.backend.entity.Reservation">
+        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
+               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
+               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
+               cancel_reason, cancel_time, created_at, updated_at
+        FROM reservation
+        WHERE 1 = 1
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+        ORDER BY created_at DESC, start_time DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!--
+        统计预约列表总数。
+        该语句与分页查询共用同一过滤条件，避免普通用户列表出现“记录只有本人，但总数是全量”的越权痕迹。
+    -->
+    <select id="countByConditions" resultType="long">
+        SELECT COUNT(*)
+        FROM reservation
+        WHERE 1 = 1
+          <if test="userId != null and userId != ''">
+              AND user_id = #{userId}
+          </if>
+    </select>
+
+    <!--
         查询同设备同时间段内的有效预约。
         仅统计仍会占用时间段的预约状态，已拒绝、已取消、已过期记录不会阻塞新的预约创建。
     -->
@@ -17,6 +50,40 @@
           AND start_time &lt; #{endTime}
           AND end_time &gt; #{startTime}
     </select>
+
+    <!--
+        统计指定设备在给定时间段内的有效预约数量。
+        该语句与冲突检测共用相同状态口径，专门用于验证并发下数据库最终状态没有留下重复预约。
+    -->
+    <select id="countActiveReservationsByDeviceAndTimeRange" resultType="long">
+        SELECT COUNT(1)
+        FROM reservation
+        WHERE device_id = #{deviceId}
+          AND status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
+          AND start_time &lt; #{endTime}
+          AND end_time &gt; #{startTime}
+    </select>
+
+    <!--
+        原子取消预约。
+        这里把“可取消状态、尚未签到、尚未开始”都下沉到单条 UPDATE 中，
+        防止控制层/服务层先查后改时，被并发审批、签到或人工处理请求用更新后的数据库事实打穿。
+    -->
+    <update id="cancelReservationSafely">
+        UPDATE reservation
+        SET status = 'CANCELLED',
+            cancel_reason = #{cancelReason},
+            cancel_time = #{cancelTime},
+            updated_at = #{updatedAt}
+        WHERE id = #{reservationId}
+          AND status IN
+          <foreach collection="allowedStatuses" item="status" open="(" separator="," close=")">
+              #{status}
+          </foreach>
+          AND sign_status = 'NOT_CHECKED_IN'
+          AND checked_in_at IS NULL
+          AND start_time &gt; #{currentTime}
+    </update>
 
     <!-- 查询超过 48 小时仍待审核的预约，用于 C-01 审核超时提醒。 -->
     <select id="findAuditPendingBefore" resultType="com.jhun.backend.entity.Reservation">

@@ -1,7 +1,9 @@
 package com.jhun.backend.integration.reservation;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
@@ -9,6 +11,7 @@ import com.jhun.backend.entity.Role;
 import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.DeviceCategoryMapper;
 import com.jhun.backend.mapper.DeviceMapper;
+import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.ReservationService;
@@ -19,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -45,6 +49,8 @@ class ReservationConflictConcurrencyIT {
     @Autowired
     private DeviceMapper deviceMapper;
     @Autowired
+    private ReservationMapper reservationMapper;
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     /**
@@ -54,11 +60,13 @@ class ReservationConflictConcurrencyIT {
     void shouldBlockConflictsUnderConcurrentRequests() throws Exception {
         Device device = createDevice();
         User user = createUser();
-        int concurrency = 20;
+        int concurrency = 50;
         CountDownLatch ready = new CountDownLatch(concurrency);
         CountDownLatch start = new CountDownLatch(1);
         var executor = Executors.newFixedThreadPool(concurrency);
-        List<Future<Boolean>> futures = new ArrayList<>();
+        List<Future<ReservationAttemptResult>> futures = new ArrayList<>();
+        LocalDateTime startTime = LocalDateTime.of(2026, 3, 22, 9, 0);
+        LocalDateTime endTime = LocalDateTime.of(2026, 3, 22, 10, 0);
 
         for (int i = 0; i < concurrency; i++) {
             futures.add(executor.submit(() -> {
@@ -67,13 +75,14 @@ class ReservationConflictConcurrencyIT {
                 try {
                     reservationService.createReservation(user.getId(), user.getId(), new CreateReservationRequest(
                             device.getId(),
-                            LocalDateTime.of(2026, 3, 22, 9, 0),
-                            LocalDateTime.of(2026, 3, 22, 10, 0),
+                            startTime,
+                            endTime,
                             "并发预约",
                             null));
-                    return true;
-                } catch (Exception exception) {
-                    return false;
+                    return ReservationAttemptResult.successResult();
+                }
+                catch (BusinessException exception) {
+                    return ReservationAttemptResult.failure(exception.getMessage());
                 }
             }));
         }
@@ -82,14 +91,37 @@ class ReservationConflictConcurrencyIT {
         start.countDown();
 
         int successCount = 0;
-        for (Future<Boolean> future : futures) {
-            if (future.get()) {
+        int conflictCount = 0;
+        for (Future<ReservationAttemptResult> future : futures) {
+            ReservationAttemptResult result = future.get();
+            if (result.success()) {
                 successCount++;
+                continue;
             }
+            assertEquals("预约时间段冲突", result.failureMessage());
+            conflictCount++;
         }
         executor.shutdownNow();
+        executor.awaitTermination(5, TimeUnit.SECONDS);
 
         assertEquals(1, successCount);
+        assertEquals(concurrency - 1, conflictCount);
+        assertEquals(1, reservationMapper.countActiveReservationsByDeviceAndTimeRange(device.getId(), startTime, endTime));
+    }
+
+    /**
+     * 并发测试不能吞掉所有异常；这里只接受成功或明确的预约冲突消息，防止数据库异常、线程异常被误判成预期失败。
+     */
+    private record ReservationAttemptResult(boolean success, String failureMessage) {
+
+        private static ReservationAttemptResult successResult() {
+            return new ReservationAttemptResult(true, null);
+        }
+
+        private static ReservationAttemptResult failure(String failureMessage) {
+            assertTrue(failureMessage != null && !failureMessage.isBlank());
+            return new ReservationAttemptResult(false, failureMessage);
+        }
     }
 
     private User createUser() {

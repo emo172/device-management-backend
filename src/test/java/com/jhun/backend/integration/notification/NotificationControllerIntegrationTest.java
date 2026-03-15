@@ -14,6 +14,7 @@ import com.jhun.backend.mapper.NotificationRecordMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,6 +62,35 @@ class NotificationControllerIntegrationTest {
     }
 
     /**
+     * 验证通知列表会回传通知页渲染和问题追踪所需的关键字段，避免前端继续依赖隐式数据库字段。
+     */
+    @Test
+    void shouldReturnNotificationListWithContractFields() throws Exception {
+        User user = createUser("notice-user-list", "notice-list@example.com");
+        NotificationRecord notification = insertNotification(user.getId(), "IN_APP", 0);
+        notification.setStatus("FAILED");
+        notification.setRetryCount(3);
+        notification.setTemplateVars("{\"reservationId\":\"r-001\"}");
+        notification.setRelatedId("reservation-001");
+        notification.setRelatedType("RESERVATION");
+        notification.setSentAt(LocalDateTime.of(2026, 3, 20, 8, 0));
+        notification.setReadAt(LocalDateTime.of(2026, 3, 20, 8, 30));
+        notificationRecordMapper.updateById(notification);
+
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("FAILED"))
+                .andExpect(jsonPath("$.data[0].readAt").value("2026-03-20T08:30:00"))
+                .andExpect(jsonPath("$.data[0].templateVars").value("{\"reservationId\":\"r-001\"}"))
+                .andExpect(jsonPath("$.data[0].retryCount").value(3))
+                .andExpect(jsonPath("$.data[0].relatedId").value("reservation-001"))
+                .andExpect(jsonPath("$.data[0].relatedType").value("RESERVATION"))
+                .andExpect(jsonPath("$.data[0].sentAt").value("2026-03-20T08:00:00"))
+                .andExpect(jsonPath("$.data[0].createdAt").exists());
+    }
+
+    /**
      * 验证用户可以查询未读通知数量，保护通知角标数据来源。
      */
     @Test
@@ -88,6 +118,20 @@ class NotificationControllerIntegrationTest {
                         .header("Authorization", bearer(user)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.readFlag").value(1));
+    }
+
+    /**
+     * 验证邮件和短信渠道不能走站内信已读链路，避免把发送态通知误标记成用户已读。
+     */
+    @Test
+    void shouldNotMarkNonInAppNotificationAsRead() throws Exception {
+        User user = createUser("notice-user-4", "notice4@example.com");
+        NotificationRecord notification = insertNotification(user.getId(), "EMAIL", 0);
+
+        mockMvc.perform(put("/api/notifications/{id}/read", notification.getId())
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("通知不存在或无需更新已读状态"));
     }
 
     /**
@@ -132,6 +176,9 @@ class NotificationControllerIntegrationTest {
         record.setStatus("SUCCESS");
         record.setRetryCount(0);
         record.setReadFlag(readFlag);
+        record.setTemplateVars("{}");
+        record.setRelatedId("related-default");
+        record.setRelatedType("TEST");
         notificationRecordMapper.insert(record);
         return record;
     }

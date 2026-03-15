@@ -52,6 +52,36 @@
     </select>
 
     <!--
+        查询后台用户列表。
+        用户管理页默认需要用户名、邮箱、角色和冻结状态等基础信息，因此这里返回用户主表基础字段，角色名由服务层统一装配，避免和现有实体映射产生额外耦合。
+    -->
+    <select id="findPage" resultType="com.jhun.backend.entity.User">
+        SELECT id,
+               username,
+               email,
+               password_hash,
+               role_id,
+               real_name,
+               phone,
+               status,
+               freeze_status,
+               freeze_reason,
+               freeze_expire_time,
+               last_login_time,
+               created_at,
+               updated_at
+        FROM `user`
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 统计后台用户总数，供用户页分页器计算总页数。 -->
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*)
+        FROM `user`
+    </select>
+
+    <!--
         查询当前用户资料。
         当前阶段仍返回用户表字段，角色名由服务层补齐，保留该查询入口是为了后续扩展用户资料聚合时不改服务签名。
     -->

@@ -17,13 +17,13 @@ import com.jhun.backend.mapper.PasswordHistoryMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.AuthService;
+import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import com.jhun.backend.service.support.notification.EmailSender;
 import com.jhun.backend.util.UuidUtil;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,9 +52,8 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final EmailSender emailSender;
+    private final AuthRuntimeStateSupport authRuntimeStateSupport;
     private final SecureRandom secureRandom = new SecureRandom();
-    private final Map<String, LoginFailureState> loginFailureStates = new ConcurrentHashMap<>();
-    private final Map<String, VerificationCodeState> verificationCodeStates = new ConcurrentHashMap<>();
 
     public AuthServiceImpl(
             UserMapper userMapper,
@@ -62,13 +61,15 @@ public class AuthServiceImpl implements AuthService {
             PasswordHistoryMapper passwordHistoryMapper,
             PasswordEncoder passwordEncoder,
             JwtTokenProvider jwtTokenProvider,
-            EmailSender emailSender) {
+            EmailSender emailSender,
+            AuthRuntimeStateSupport authRuntimeStateSupport) {
         this.userMapper = userMapper;
         this.roleMapper = roleMapper;
         this.passwordHistoryMapper = passwordHistoryMapper;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
         this.emailSender = emailSender;
+        this.authRuntimeStateSupport = authRuntimeStateSupport;
     }
 
     @Override
@@ -160,9 +161,10 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException("邮箱未注册");
         }
         String verificationCode = generateResetCode();
-        verificationCodeStates.put(
+        authRuntimeStateSupport.storeVerificationCode(
                 request.email(),
-                new VerificationCodeState(verificationCode, LocalDateTime.now().plusMinutes(RESET_CODE_EXPIRE_MINUTES)));
+                verificationCode,
+                LocalDateTime.now().plusMinutes(RESET_CODE_EXPIRE_MINUTES));
 
         /*
          * 重置接口对匿名用户开放，因此验证码不能只存在服务端内存而不经通道下发。
@@ -175,7 +177,7 @@ public class AuthServiceImpl implements AuthService {
                     "您的验证码为：" + verificationCode + "，" + RESET_CODE_EXPIRE_MINUTES + " 分钟内有效。");
         }
         catch (RuntimeException exception) {
-            verificationCodeStates.remove(request.email());
+            authRuntimeStateSupport.removeVerificationCode(request.email());
             throw new BusinessException("验证码发送失败，请稍后重试");
         }
     }
@@ -183,8 +185,11 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public void resetPassword(ResetPasswordRequest request) {
-        VerificationCodeState verificationCodeState = verificationCodeStates.get(request.email());
-        if (verificationCodeState == null || verificationCodeState.expireAt().isBefore(LocalDateTime.now())) {
+        AuthRuntimeStateSupport.VerificationCodeState verificationCodeState =
+                authRuntimeStateSupport.getVerificationCodeState(request.email());
+        LocalDateTime now = LocalDateTime.now();
+        if (verificationCodeState == null
+                || authRuntimeStateSupport.isExpiredAtOrBefore(verificationCodeState.expireAt(), now)) {
             throw new BusinessException("验证码不存在或已过期");
         }
         if (!verificationCodeState.code().equals(request.verificationCode())) {
@@ -196,7 +201,7 @@ public class AuthServiceImpl implements AuthService {
         }
         validatePasswordNotReused(user.getId(), request.newPassword());
         updatePassword(user, request.newPassword());
-        verificationCodeStates.remove(request.email());
+        authRuntimeStateSupport.removeVerificationCode(request.email());
     }
 
     private CurrentUserResponse toCurrentUserResponse(User user, String roleName) {
@@ -204,12 +209,29 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private LoginResponse buildLoginResponse(User user, String roleName) {
+        String accessToken = jwtTokenProvider.createAccessToken(user.getId(), user.getUsername(), roleName);
+        String refreshToken = jwtTokenProvider.createRefreshToken(user.getId(), user.getUsername(), roleName);
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime refreshTokenExpireAt = jwtTokenProvider.parseClaims(refreshToken)
+                .getExpiration()
+                .toInstant()
+                .atZone(ZoneId.systemDefault())
+                .toLocalDateTime();
+
+        /*
+         * 这里分别记录 refresh token 快照与 access token 对应的会话快照，仅用于运维态清理和问题排查，
+         * 不参与受保护接口的令牌校验。会话快照必须与过滤器里用于触达的 access token 保持同一键空间，
+         * 否则 C-10 会看到“登录时一套键、访问时另一套键”的并行快照，导致空闲治理口径失真。
+         */
+        authRuntimeStateSupport.recordRefreshToken(refreshToken, user.getId(), refreshTokenExpireAt);
+        authRuntimeStateSupport.recordSession(accessToken, user.getId(), now, now);
+
         return new LoginResponse(
                 user.getId(),
                 user.getUsername(),
                 roleName,
-                jwtTokenProvider.createAccessToken(user.getId(), user.getUsername(), roleName),
-                jwtTokenProvider.createRefreshToken(user.getId(), user.getUsername(), roleName));
+                accessToken,
+                refreshToken);
     }
 
     private User mustFindUserById(String userId) {
@@ -244,21 +266,18 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private void assertAccountNotLocked(String account) {
-        LoginFailureState state = loginFailureStates.get(account);
+        AuthRuntimeStateSupport.LoginFailureState state = authRuntimeStateSupport.getLoginFailureState(account);
         if (state != null && state.lockedUntil() != null && state.lockedUntil().isAfter(LocalDateTime.now())) {
             throw new BusinessException("登录失败次数过多，请 30 分钟后再试");
         }
     }
 
     private void recordLoginFailure(String account) {
-        LoginFailureState currentState = loginFailureStates.getOrDefault(account, new LoginFailureState(0, null));
-        int nextFailureCount = currentState.failureCount() + 1;
-        LocalDateTime lockedUntil = nextFailureCount >= MAX_FAILED_LOGIN_ATTEMPTS ? LocalDateTime.now().plusMinutes(30) : null;
-        loginFailureStates.put(account, new LoginFailureState(nextFailureCount, lockedUntil));
+        authRuntimeStateSupport.incrementLoginFailure(account, MAX_FAILED_LOGIN_ATTEMPTS, LocalDateTime.now().plusMinutes(30));
     }
 
     private void clearLoginFailure(String account) {
-        loginFailureStates.remove(account);
+        authRuntimeStateSupport.clearLoginFailure(account);
     }
 
     /**
@@ -270,11 +289,4 @@ public class AuthServiceImpl implements AuthService {
         return String.format("%06d", secureRandom.nextInt(RESET_CODE_BOUND));
     }
 
-    /** 登录失败状态快照。 */
-    private record LoginFailureState(int failureCount, LocalDateTime lockedUntil) {
-    }
-
-    /** 验证码状态快照。 */
-    private record VerificationCodeState(String code, LocalDateTime expireAt) {
-    }
 }

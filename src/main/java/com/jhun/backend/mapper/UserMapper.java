@@ -2,6 +2,7 @@ package com.jhun.backend.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.jhun.backend.entity.User;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -28,6 +29,18 @@ public interface UserMapper extends BaseMapper<User> {
      * @return 用户实体，不存在时返回空
      */
     User findByEmail(@Param("email") String email);
+
+    /**
+     * 分页查询后台用户列表。
+     * <p>
+     * 该接口专供 SYSTEM_ADMIN 后台页面使用，因此默认返回全量用户基础资料，具体权限由控制层和安全链统一收口。
+     */
+    List<User> findPage(@Param("limit") int limit, @Param("offset") int offset);
+
+    /**
+     * 统计后台用户总数，保证用户页分页信息与列表结果一致。
+     */
+    long countAll();
 
     /**
      * 查询带角色名称的当前用户资料。

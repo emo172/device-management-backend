@@ -5,28 +5,30 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 
 import com.jhun.backend.common.exception.BusinessException;
+import com.jhun.backend.config.security.JwtTokenProvider;
 import com.jhun.backend.dto.auth.LoginRequest;
 import com.jhun.backend.dto.auth.LoginResponse;
 import com.jhun.backend.dto.auth.RegisterRequest;
 import com.jhun.backend.dto.auth.ResetPasswordRequest;
 import com.jhun.backend.dto.auth.SendResetCodeRequest;
 import com.jhun.backend.service.AuthService;
-import com.jhun.backend.service.impl.AuthServiceImpl;
+import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import com.jhun.backend.service.support.notification.EmailSender;
-import java.util.Map;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * 认证服务测试。
@@ -45,7 +47,10 @@ class AuthServiceTest {
     private AuthService authService;
 
     @Autowired
-    private AuthServiceImpl authServiceImpl;
+    private AuthRuntimeStateSupport authRuntimeStateSupport;
+
+    @Autowired
+    private JwtTokenProvider jwtTokenProvider;
 
     @MockitoBean
     private EmailSender emailSender;
@@ -87,6 +92,49 @@ class AuthServiceTest {
     }
 
     /**
+     * 验证登录返回的 access token 会被登记为会话快照键。
+     * <p>
+     * 过滤器后续是按 access token 触达会话快照的，若登录阶段却用 refresh token 建档，
+     * 会让 C-10 观察到两套并行键空间，影响会话空闲清理与问题排查的一致性。
+     */
+    @Test
+    void shouldUseAccessTokenAsSessionSnapshotKey() {
+        authService.register(new RegisterRequest(
+                "liuqi",
+                "Password123!",
+                "liuqi@example.com",
+                "刘七",
+                "13800138007"));
+
+        LoginResponse response = authService.login(new LoginRequest("liuqi@example.com", "Password123!"));
+
+        assertTrue(authRuntimeStateSupport.hasSession(response.accessToken()));
+        assertFalse(authRuntimeStateSupport.hasSession(response.refreshToken()));
+    }
+
+    /**
+     * 验证 refresh token 快照的过期时间与 JWT 自身声明保持一致，避免调度清理口径与真实令牌生命周期漂移。
+     */
+    @Test
+    void shouldStoreRefreshTokenSnapshotWithJwtExpiration() {
+        authService.register(new RegisterRequest(
+                "zhoujiu",
+                "Password123!",
+                "zhoujiu@example.com",
+                "周九",
+                "13800138011"));
+
+        LoginResponse response = authService.login(new LoginRequest("zhoujiu@example.com", "Password123!"));
+        LocalDateTime jwtExpireAt = jwtTokenProvider.parseClaims(response.refreshToken())
+                .getExpiration()
+                .toInstant()
+                .atZone(ZoneId.systemDefault())
+                .toLocalDateTime();
+
+        assertEquals(jwtExpireAt, authRuntimeStateSupport.getRefreshTokenState(response.refreshToken()).expireAt());
+    }
+
+    /**
      * 验证密码重置时不能复用历史密码，避免绕过密码历史治理规则。
      */
     @Test
@@ -109,7 +157,6 @@ class AuthServiceTest {
      * 验证重置验证码必须按请求动态生成，避免匿名重置接口落成固定口令入口。
      */
     @Test
-    @SuppressWarnings("unchecked")
     void shouldGenerateRandomResetCodeInsteadOfUsingFixedCode() {
         authService.register(new RegisterRequest(
                 "zhaoba",
@@ -119,14 +166,10 @@ class AuthServiceTest {
                 "13800138008"));
 
         authService.sendResetCode(new SendResetCodeRequest("zhaoba@example.com"));
-        Map<String, ?> verificationCodeStates =
-                (Map<String, ?>) ReflectionTestUtils.getField(authServiceImpl, "verificationCodeStates");
-        Object firstState = verificationCodeStates.get("zhaoba@example.com");
-        String firstCode = (String) ReflectionTestUtils.invokeMethod(firstState, "code");
+        String firstCode = authRuntimeStateSupport.getVerificationCodeState("zhaoba@example.com").code();
 
         authService.sendResetCode(new SendResetCodeRequest("zhaoba@example.com"));
-        Object secondState = verificationCodeStates.get("zhaoba@example.com");
-        String secondCode = (String) ReflectionTestUtils.invokeMethod(secondState, "code");
+        String secondCode = authRuntimeStateSupport.getVerificationCodeState("zhaoba@example.com").code();
 
         verify(emailSender, org.mockito.Mockito.times(2)).send(eq("zhaoba@example.com"), eq("智能设备管理系统密码重置验证码"), contains("您的验证码为："));
         assertNotEquals("888888", firstCode);
@@ -157,7 +200,6 @@ class AuthServiceTest {
      * 验证邮件发送失败时不能把验证码留在服务端内存中，避免用户收不到验证码却占住有效窗口。
      */
     @Test
-    @SuppressWarnings("unchecked")
     void shouldRemoveResetCodeStateWhenEmailDeliveryFails() {
         authService.register(new RegisterRequest(
                 "shiyi",
@@ -174,9 +216,7 @@ class AuthServiceTest {
                 BusinessException.class,
                 () -> authService.sendResetCode(new SendResetCodeRequest("shiyi@example.com")));
 
-        Map<String, ?> verificationCodeStates =
-                (Map<String, ?>) ReflectionTestUtils.getField(authServiceImpl, "verificationCodeStates");
         assertEquals("验证码发送失败，请稍后重试", exception.getMessage());
-        assertFalse(verificationCodeStates.containsKey("shiyi@example.com"));
+        assertFalse(authRuntimeStateSupport.hasVerificationCode("shiyi@example.com"));
     }
 }
