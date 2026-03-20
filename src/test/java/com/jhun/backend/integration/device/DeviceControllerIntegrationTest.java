@@ -1,11 +1,13 @@
 package com.jhun.backend.integration.device;
 
+import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,7 +19,12 @@ import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.Comparator;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +33,8 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -40,6 +49,11 @@ import org.springframework.web.context.WebApplicationContext;
 @SpringBootTest
 @ActiveProfiles("test")
 class DeviceControllerIntegrationTest {
+
+    /**
+     * 设备图片上传测试必须写到系统临时目录，避免把运行产物落回仓库根下的 `uploads/` 并污染工作区。
+     */
+    private static final Path TEST_UPLOAD_DIR = createTestUploadDirectory();
 
     @Autowired
     private WebApplicationContext webApplicationContext;
@@ -62,11 +76,28 @@ class DeviceControllerIntegrationTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private MockMvc mockMvc;
 
+    /**
+     * 为整个测试类注入独立上传目录，确保静态资源映射仍走真实配置链路，但磁盘落点隔离到测试临时区。
+     */
+    @DynamicPropertySource
+    static void registerStorageProperties(DynamicPropertyRegistry registry) {
+        registry.add("storage.upload-dir", () -> TEST_UPLOAD_DIR.toString());
+        registry.add("storage.public-base-url", () -> "/files");
+    }
+
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
+    }
+
+    /**
+     * 在测试类结束后递归清理临时上传目录，避免本次运行遗留磁盘垃圾。
+     */
+    @AfterAll
+    static void cleanUpUploadDirectory() throws IOException {
+        deleteDirectoryRecursively(TEST_UPLOAD_DIR);
     }
 
     /**
@@ -203,7 +234,8 @@ class DeviceControllerIntegrationTest {
     }
 
     /**
-     * 验证设备图片上传后可在详情中回传图片地址和状态日志，保护设备详情页的可追溯能力。
+     * 验证设备图片上传后，即使客户端提交了带路径片段的文件名，
+     * 服务端仍会返回 `/files/devices/` 前缀下的稳定公开地址，并允许匿名直接访问图片内容。
      */
     @Test
     void shouldUploadImageAndReturnStatusLogsInDetail() throws Exception {
@@ -228,18 +260,25 @@ class DeviceControllerIntegrationTest {
                 .andReturn();
 
         String deviceId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
+        byte[] expectedImageBytes = "fake-image".getBytes();
 
         MockMultipartFile image = new MockMultipartFile(
                 "file",
-                "camera.png",
+                "../camera.png",
                 MediaType.IMAGE_PNG_VALUE,
-                "fake-image".getBytes());
+                expectedImageBytes);
 
-        mockMvc.perform(multipart("/api/devices/{id}/image", deviceId)
+        MvcResult uploadResult = mockMvc.perform(multipart("/api/devices/{id}/image", deviceId)
                         .file(image)
                         .header("Authorization", token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.imageUrl").isNotEmpty());
+                .andExpect(jsonPath("$.data.imageUrl", startsWith("/files/devices/")))
+                .andReturn();
+
+        String imageUrl = objectMapper.readTree(uploadResult.getResponse().getContentAsString())
+                .path("data")
+                .path("imageUrl")
+                .asText();
 
         mockMvc.perform(put("/api/devices/{id}/status", deviceId)
                         .header("Authorization", token)
@@ -256,8 +295,148 @@ class DeviceControllerIntegrationTest {
         mockMvc.perform(get("/api/devices/{id}", deviceId)
                         .header("Authorization", token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.imageUrl").isNotEmpty())
+                .andExpect(jsonPath("$.data.imageUrl").value(imageUrl))
                 .andExpect(jsonPath("$.data.statusLogs[0].newStatus").value("MAINTENANCE"));
+
+        /*
+         * 设备列表卡片同样依赖后端回传的图片地址，
+         * 因此这里补充校验列表响应继续透出 `/files/devices/**` 下的公开路径，避免前端在列表页回退到旧上传口径。
+         */
+        mockMvc.perform(get("/api/devices")
+                        .header("Authorization", token)
+                        .param("page", "1")
+                        .param("size", "10")
+                        .param("categoryName", categoryName))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records[0].imageUrl").value(imageUrl));
+
+        /*
+         * `/files/devices/**` 是前端展示设备图片的统一静态出口，因此这里额外校验匿名访问也能直接取回上传内容，
+         * 防止图片 URL 虽然回写成功，但仍被安全链或资源映射挡住导致浏览器实际无法展示。
+         */
+        mockMvc.perform(get(imageUrl))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(expectedImageBytes));
+    }
+
+    /**
+     * 验证同一设备重复上传图片时，不会在磁盘上持续堆积旧文件。
+     * <p>
+     * 允许实现选择“复用稳定路径”或“删除旧图再切换新路径”，
+     * 但无论采用哪种策略，都必须保证设备图片目录里最终只保留该设备的当前有效图片。
+     */
+    @Test
+    void shouldReplacePreviousDeviceImageWithoutLeavingOrphanFiles() throws Exception {
+        String token = bearer(createDeviceAdminUser("device-admin-4c", "device-admin-4c@example.com"), "DEVICE_ADMIN");
+        String categoryName = "设备图片-去孤儿文件";
+        createCategory(token, categoryName);
+
+        MvcResult createResult = mockMvc.perform(post("/api/devices")
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "切图相机",
+                                  "deviceNumber": "DEV-CAM-REPLACE-001",
+                                  "categoryName": "%s",
+                                  "status": "AVAILABLE",
+                                  "description": "验证重复上传会清理旧图",
+                                  "location": "Studio-2"
+                                }
+                                """.formatted(categoryName)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String deviceId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
+        MockMultipartFile firstImage = new MockMultipartFile(
+                "file",
+                "first.png",
+                MediaType.IMAGE_PNG_VALUE,
+                "first-image".getBytes());
+        MockMultipartFile secondImage = new MockMultipartFile(
+                "file",
+                "second.jpg",
+                MediaType.IMAGE_JPEG_VALUE,
+                "second-image".getBytes());
+
+        String firstImageUrl = objectMapper.readTree(mockMvc.perform(multipart("/api/devices/{id}/image", deviceId)
+                        .file(firstImage)
+                        .header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.imageUrl", startsWith("/files/devices/")))
+                .andReturn()
+                .getResponse()
+                .getContentAsString())
+                .path("data")
+                .path("imageUrl")
+                .asText();
+
+        String secondImageUrl = objectMapper.readTree(mockMvc.perform(multipart("/api/devices/{id}/image", deviceId)
+                        .file(secondImage)
+                        .header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.imageUrl", startsWith("/files/devices/")))
+                .andReturn()
+                .getResponse()
+                .getContentAsString())
+                .path("data")
+                .path("imageUrl")
+                .asText();
+
+        org.junit.jupiter.api.Assertions.assertEquals(1L, countDeviceImageFiles(deviceId));
+
+        if (!firstImageUrl.equals(secondImageUrl)) {
+            MvcResult staleImageResult = mockMvc.perform(get(firstImageUrl))
+                    .andReturn();
+
+            /*
+             * 旧图路径一旦与新图不同，就不能继续返回原始图片内容；
+             * 这里允许底层返回 404 或统一异常响应，但绝不能还是 200，否则说明旧文件仍在公开目录中可读。
+             */
+            org.junit.jupiter.api.Assertions.assertNotEquals(200, staleImageResult.getResponse().getStatus());
+        }
+
+        mockMvc.perform(get(secondImageUrl))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes("second-image".getBytes()));
+    }
+
+    /**
+     * 验证公开静态目录不会接受任意文件类型，避免把脚本等非图片文件直接暴露到 `/files/devices/`。
+     */
+    @Test
+    void shouldRejectUnsupportedPublicFileTypeOnDeviceImageUpload() throws Exception {
+        String token = bearer(createDeviceAdminUser("device-admin-4b", "device-admin-4b@example.com"), "DEVICE_ADMIN");
+        String categoryName = "设备图片-类型白名单";
+        createCategory(token, categoryName);
+
+        MvcResult createResult = mockMvc.perform(post("/api/devices")
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "录音笔",
+                                  "deviceNumber": "DEV-REC-001",
+                                  "categoryName": "%s",
+                                  "status": "AVAILABLE",
+                                  "description": "验证公开文件类型白名单",
+                                  "location": "Studio-1"
+                                }
+                                """.formatted(categoryName)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String deviceId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
+        MockMultipartFile scriptFile = new MockMultipartFile(
+                "file",
+                "deploy.sh",
+                MediaType.TEXT_PLAIN_VALUE,
+                "#!/bin/sh".getBytes());
+
+        mockMvc.perform(multipart("/api/devices/{id}/image", deviceId)
+                        .file(scriptFile)
+                        .header("Authorization", token))
+                .andExpect(status().isBadRequest());
     }
 
     /**
@@ -315,8 +494,13 @@ class DeviceControllerIntegrationTest {
     @Test
     void shouldRejectCreateDeviceBySystemAdmin() throws Exception {
         String token = bearer(createSystemAdminUser("device-sys-1", "device-sys-1@example.com"), "SYSTEM_ADMIN");
+        String categoryAdminToken = bearer(createDeviceAdminUser("device-cat-admin-1", "device-cat-admin-1@example.com"), "DEVICE_ADMIN");
         String categoryName = "系统管理员无权设备创建";
-        createCategory(token, categoryName);
+        /*
+         * 分类创建口径在 Task 3 中已经收敛到 DEVICE_ADMIN，
+         * 因此这里先由设备管理员准备合法分类，再验证 SYSTEM_ADMIN 仍然不能越权创建设备。
+         */
+        createCategory(categoryAdminToken, categoryName);
 
         mockMvc.perform(post("/api/devices")
                         .header("Authorization", token)
@@ -510,5 +694,44 @@ class DeviceControllerIntegrationTest {
 
     private String bearer(User user, String role) {
         return "Bearer " + jwtTokenProvider.createAccessToken(user.getId(), user.getUsername(), role);
+    }
+
+    /**
+     * 为上传测试创建系统临时目录，确保路径隔离到仓库外部。
+     */
+    private static Path createTestUploadDirectory() {
+        try {
+            return Files.createTempDirectory("device-controller-it-uploads-");
+        } catch (IOException exception) {
+            throw new IllegalStateException("创建设备图片测试临时目录失败", exception);
+        }
+    }
+
+    /**
+     * 递归删除测试临时目录，避免集成测试在本地持续累积上传产物。
+     */
+    private static void deleteDirectoryRecursively(Path directory) throws IOException {
+        if (directory == null || Files.notExists(directory)) {
+            return;
+        }
+        try (var paths = Files.walk(directory)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
+
+    /**
+     * 统计某台设备在测试上传目录里仍然残留的图片文件数量，
+     * 用于直接保护“重复上传不会制造孤儿文件”的磁盘层契约。
+     */
+    private long countDeviceImageFiles(String deviceId) throws IOException {
+        Path deviceImageDirectory = TEST_UPLOAD_DIR.resolve("devices");
+        if (Files.notExists(deviceImageDirectory)) {
+            return 0L;
+        }
+        try (var paths = Files.list(deviceImageDirectory)) {
+            return paths.filter(path -> path.getFileName().toString().startsWith(deviceId)).count();
+        }
     }
 }
