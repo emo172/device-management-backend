@@ -63,6 +63,12 @@ public class ReservationController {
         return Result.success(reservationService.getReservationDetail(reservationId, principal.userId(), principal.role()));
     }
 
+    /**
+     * 创建本人预约。
+     * <p>
+     * 控制层显式把“创建人”和“预约申请人”都绑定为当前登录用户，
+     * 防止普通用户通过自行构造请求体把本人预约入口伪造成代预约入口。
+     */
     @PostMapping
     public Result<ReservationResponse> create(
             @AuthenticationPrincipal AuthUserPrincipal principal,
@@ -70,6 +76,12 @@ public class ReservationController {
         return Result.success(reservationService.createReservation(principal.userId(), principal.userId(), request));
     }
 
+    /**
+     * 创建代预约。
+     * <p>
+     * 代预约只允许服务层按当前角色继续校验目标用户与审批口径，
+     * 控制层这里保持最小转发，确保 `SYSTEM_ADMIN` 的管理型代预约与普通用户本人预约严格分流。
+     */
     @PostMapping("/proxy")
     public Result<ReservationResponse> createProxy(
             @AuthenticationPrincipal AuthUserPrincipal principal,
@@ -77,6 +89,12 @@ public class ReservationController {
         return Result.success(reservationService.createProxyReservation(principal.userId(), principal.role(), request));
     }
 
+    /**
+     * 设备管理员第一审接口。
+     * <p>
+     * 这里只负责承接一审动作并把当前操作者身份下传给服务层，
+     * 真正的审批流转、通知发送和 workflow context 回包都由服务层统一编排，避免控制层复制业务判断。
+     */
     @PostMapping("/{id}/audit")
     public Result<ReservationResponse> deviceAudit(
             @PathVariable("id") String reservationId,
@@ -85,6 +103,12 @@ public class ReservationController {
         return Result.success(reservationService.deviceApprove(reservationId, principal.userId(), principal.role(), request));
     }
 
+    /**
+     * 系统管理员第二审接口。
+     * <p>
+     * 双审批模式下，第二审会把预约推进到最终审批结论，因此服务层既要校验“双审不能同账号完成”，
+     * 也要返回最终审批轨迹供前端待审批页和详情页直接复用。
+     */
     @PostMapping("/{id}/system-audit")
     public Result<ReservationResponse> systemAudit(
             @PathVariable("id") String reservationId,
@@ -93,6 +117,12 @@ public class ReservationController {
         return Result.success(reservationService.systemApprove(reservationId, principal.userId(), principal.role(), request));
     }
 
+    /**
+     * 预约签到接口。
+     * <p>
+     * 前端会按签到窗口显式传入签到时间；服务层据此判断正常签到、超时签到或拒绝签到，
+     * 并把最新签到结果与上下文字段一起回传给签到页继续渲染。
+     */
     @PostMapping("/{id}/check-in")
     public Result<ReservationResponse> checkIn(
             @PathVariable("id") String reservationId,
@@ -114,6 +144,12 @@ public class ReservationController {
         return Result.success(reservationService.cancelReservation(reservationId, principal.userId(), principal.role(), request));
     }
 
+    /**
+     * 待人工处理预约的最终裁决接口。
+     * <p>
+     * 当预约已进入 `PENDING_MANUAL` 时，只有允许的管理角色才能在此接口内给出最终处理结果；
+     * 服务层会统一落库状态、补齐 remark，并返回前端继续展示所需的动作回包上下文。
+     */
     @PutMapping("/{id}/manual-process")
     public Result<ReservationResponse> manualProcess(
             @PathVariable("id") String reservationId,

@@ -23,6 +23,7 @@ import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +47,8 @@ import org.springframework.web.context.WebApplicationContext;
 @SpringBootTest
 @ActiveProfiles("test")
 class ReservationControllerIntegrationTest {
+
+    private static final DateTimeFormatter ISO_SECOND_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     @Autowired
     private WebApplicationContext webApplicationContext;
@@ -135,10 +138,47 @@ class ReservationControllerIntegrationTest {
                                 {
                                   "approved": true,
                                   "remark": "设备管理员通过"
+                                 }
+                                 """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_SYSTEM_APPROVAL"));
+    }
+
+    /**
+     * 验证一审响应直接返回审批流所需的完整上下文字段，
+     * 防止前端在待审批页或详情页只能拿到状态码、还要额外凭空拼设备名和审批人信息。
+     */
+    @Test
+    void shouldReturnWorkflowContextAfterDeviceApproval() throws Exception {
+        User user = createUser("reserve-user-2b", "reserve-user-2b@example.com", "USER");
+        User deviceAdmin = createUser("rsv-da-2b", "reserve-device-admin-2b@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_THEN_SYSTEM");
+        LocalDateTime startTime = futureTime(5, 15, 0);
+        LocalDateTime endTime = startTime.plusHours(1);
+        String reservationId = createReservation(user, device, formatTime(startTime), formatTime(endTime), "审批上下文", "一审回包字段");
+
+        mockMvc.perform(post("/api/reservations/{id}/audit", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "approved": true,
+                                  "remark": "设备管理员通过"
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("PENDING_SYSTEM_APPROVAL"));
+                .andExpect(jsonPath("$.data.status").value("PENDING_SYSTEM_APPROVAL"))
+                .andExpect(jsonPath("$.data.reservationMode").value("SELF"))
+                .andExpect(jsonPath("$.data.approvalModeSnapshot").value("DEVICE_THEN_SYSTEM"))
+                .andExpect(jsonPath("$.data.signStatus").value("NOT_CHECKED_IN"))
+                .andExpect(jsonPath("$.data.userName").value(user.getUsername()))
+                .andExpect(jsonPath("$.data.deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.deviceApproverId").value(deviceAdmin.getId()))
+                .andExpect(jsonPath("$.data.deviceApproverName").value(deviceAdmin.getUsername()))
+                .andExpect(jsonPath("$.data.deviceApprovedAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.startTime").value(formatTime(startTime)))
+                .andExpect(jsonPath("$.data.endTime").value(formatTime(endTime)));
     }
 
     /**
@@ -193,6 +233,61 @@ class ReservationControllerIntegrationTest {
     }
 
     /**
+     * 验证 `DEVICE_THEN_SYSTEM` 双审批链路可以完整闭环到 `APPROVED`，
+     * 且二审成功响应继续携带前端详情页/待审批页需要的 workflow context，避免页面在二审成功后再次拼装审批人和设备信息。
+     */
+    @Test
+    void shouldApproveReservationAfterSecondApprovalAndReturnWorkflowContext() throws Exception {
+        User user = createUser("rsv-u-2nd-ok", "reserve-user-second-ok@example.com", "USER");
+        User deviceAdmin = createUser("rsv-da-2ndok", "reserve-device-second-ok@example.com", "DEVICE_ADMIN");
+        User systemAdmin = createUser("rsv-sa-2ndok", "reserve-system-second-ok@example.com", "SYSTEM_ADMIN");
+        Device device = createDevice("DEVICE_THEN_SYSTEM");
+        LocalDateTime startTime = futureTime(7, 10, 0);
+        LocalDateTime endTime = startTime.plusHours(2);
+        String reservationId = createReservation(user, device, formatTime(startTime), formatTime(endTime), "双审批闭环", "验证二审完成回包");
+
+        mockMvc.perform(post("/api/reservations/{id}/audit", reservationId)
+                        .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "approved": true,
+                                  "remark": "设备侧通过"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_SYSTEM_APPROVAL"));
+
+        mockMvc.perform(post("/api/reservations/{id}/system-audit", reservationId)
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "approved": true,
+                                  "remark": "系统侧通过"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(reservationId))
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.approvalModeSnapshot").value("DEVICE_THEN_SYSTEM"))
+                .andExpect(jsonPath("$.data.signStatus").value("NOT_CHECKED_IN"))
+                .andExpect(jsonPath("$.data.userName").value(user.getUsername()))
+                .andExpect(jsonPath("$.data.createdByName").value(user.getUsername()))
+                .andExpect(jsonPath("$.data.deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.startTime").value(formatTime(startTime)))
+                .andExpect(jsonPath("$.data.endTime").value(formatTime(endTime)))
+                .andExpect(jsonPath("$.data.deviceApproverId").value(deviceAdmin.getId()))
+                .andExpect(jsonPath("$.data.deviceApproverName").value(deviceAdmin.getUsername()))
+                .andExpect(jsonPath("$.data.deviceApprovedAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.systemApproverId").value(systemAdmin.getId()))
+                .andExpect(jsonPath("$.data.systemApproverName").value(systemAdmin.getUsername()))
+                .andExpect(jsonPath("$.data.systemApprovedAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.systemApprovalRemark").value("系统侧通过"));
+    }
+
+    /**
      * 验证用户在签到窗口内可以签到，保护“开始前 30 分钟到开始后 30 分钟为正常签到”的规则。
      */
     @Test
@@ -216,6 +311,38 @@ class ReservationControllerIntegrationTest {
     }
 
     /**
+     * 验证开始后 30~60 分钟签到会统一落成 `CHECKED_IN_TIMEOUT`，
+     * 且签到响应要直接携带详情页继续展示所需的设备、预约人与签到时间字段。
+     */
+    @Test
+    void shouldReturnLateCheckInWorkflowContext() throws Exception {
+        User user = createUser("rsv-ci-u1b", "reserve-user-checkin-1b@example.com", "USER");
+        User deviceAdmin = createUser("rsv-ci-da1b", "reserve-device-admin-checkin-1b@example.com", "DEVICE_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        LocalDateTime startTime = futureTime(6, 15, 0);
+        String reservationId = createApprovedReservation(user, deviceAdmin, device, formatTime(startTime), formatTime(startTime.plusHours(1)));
+        LocalDateTime checkInTime = startTime.plusMinutes(45);
+
+        mockMvc.perform(post("/api/reservations/{id}/check-in", reservationId)
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "checkInTime": "%s"
+                                }
+                                """.formatted(formatTime(checkInTime))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.signStatus").value("CHECKED_IN_TIMEOUT"))
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.reservationMode").value("SELF"))
+                .andExpect(jsonPath("$.data.approvalModeSnapshot").value("DEVICE_ONLY"))
+                .andExpect(jsonPath("$.data.userName").value(user.getUsername()))
+                .andExpect(jsonPath("$.data.deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.checkedInAt").value(formatTime(checkInTime)))
+                .andExpect(jsonPath("$.data.startTime").value(formatTime(startTime)));
+    }
+
+    /**
      * 验证开始后超过 60 分钟签到会被拒绝，保护“超过 60 分钟未签到则预约过期”的规则。
      */
     @Test
@@ -235,6 +362,14 @@ class ReservationControllerIntegrationTest {
                                 }
                                 """.formatted(formatTime(startTime.plusMinutes(70)))))
                 .andExpect(status().isBadRequest());
+
+        /**
+         * 签到超时虽然返回 400，但后端仍必须把预约推进到 EXPIRED，
+         * 否则前端只看到“超时”提示，数据库里却还保留 APPROVED，会导致后续借还和列表视图继续把它当成有效预约。
+         */
+        var reservation = reservationMapper.selectById(reservationId);
+        org.assertj.core.api.Assertions.assertThat(reservation.getStatus()).isEqualTo("EXPIRED");
+        org.assertj.core.api.Assertions.assertThat(reservation.getSignStatus()).isEqualTo("NOT_CHECKED_IN");
     }
 
     /**
@@ -748,6 +883,6 @@ class ReservationControllerIntegrationTest {
      * 统一输出 ISO 本地时间字符串，避免每个测试各自处理格式导致时间精度不一致。
      */
     private String formatTime(LocalDateTime time) {
-        return time.truncatedTo(ChronoUnit.SECONDS).toString();
+        return time.truncatedTo(ChronoUnit.SECONDS).format(ISO_SECOND_FORMATTER);
     }
 }
