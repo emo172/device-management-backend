@@ -6,10 +6,12 @@ import com.jhun.backend.dto.overdue.OverdueRecordPageResponse;
 import com.jhun.backend.dto.overdue.OverdueRecordResponse;
 import com.jhun.backend.dto.overdue.ProcessOverdueRequest;
 import com.jhun.backend.entity.BorrowRecord;
+import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.NotificationRecord;
 import com.jhun.backend.entity.OverdueRecord;
 import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.BorrowRecordMapper;
+import com.jhun.backend.mapper.DeviceMapper;
 import com.jhun.backend.mapper.NotificationRecordMapper;
 import com.jhun.backend.mapper.OverdueRecordMapper;
 import com.jhun.backend.mapper.UserMapper;
@@ -41,16 +43,19 @@ public class OverdueServiceImpl implements OverdueService {
 
     private final OverdueRecordMapper overdueRecordMapper;
     private final BorrowRecordMapper borrowRecordMapper;
+    private final DeviceMapper deviceMapper;
     private final UserMapper userMapper;
     private final NotificationRecordMapper notificationRecordMapper;
 
     public OverdueServiceImpl(
             OverdueRecordMapper overdueRecordMapper,
             BorrowRecordMapper borrowRecordMapper,
+            DeviceMapper deviceMapper,
             UserMapper userMapper,
             NotificationRecordMapper notificationRecordMapper) {
         this.overdueRecordMapper = overdueRecordMapper;
         this.borrowRecordMapper = borrowRecordMapper;
+        this.deviceMapper = deviceMapper;
         this.userMapper = userMapper;
         this.notificationRecordMapper = notificationRecordMapper;
     }
@@ -388,11 +393,16 @@ public class OverdueServiceImpl implements OverdueService {
     }
 
     private OverdueRecordResponse toResponse(OverdueRecord overdueRecord) {
+        User user = userMapper.selectById(overdueRecord.getUserId());
+        Device device = deviceMapper.selectById(overdueRecord.getDeviceId());
         return new OverdueRecordResponse(
                 overdueRecord.getId(),
                 overdueRecord.getBorrowRecordId(),
                 overdueRecord.getUserId(),
+                resolveUserName(user),
                 overdueRecord.getDeviceId(),
+                device == null ? null : device.getName(),
+                device == null ? null : device.getDeviceNumber(),
                 overdueRecord.getOverdueHours(),
                 overdueRecord.getOverdueDays(),
                 overdueRecord.getProcessingStatus(),
@@ -403,5 +413,18 @@ public class OverdueServiceImpl implements OverdueService {
                 overdueRecord.getCompensationAmount(),
                 overdueRecord.getNotificationSent(),
                 overdueRecord.getCreatedAt());
+    }
+
+    /**
+     * 逾期页与借还页共用“实名优先、用户名兜底”的展示口径，避免同一用户在不同页面显示出两套名字来源。
+     */
+    private String resolveUserName(User user) {
+        if (user == null) {
+            return null;
+        }
+        if (user.getRealName() != null && !user.getRealName().isBlank()) {
+            return user.getRealName();
+        }
+        return user.getUsername();
     }
 }

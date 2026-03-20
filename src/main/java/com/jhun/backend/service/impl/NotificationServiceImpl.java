@@ -8,6 +8,7 @@ import com.jhun.backend.dto.notification.UnreadCountResponse;
 import com.jhun.backend.entity.NotificationRecord;
 import com.jhun.backend.mapper.NotificationRecordMapper;
 import com.jhun.backend.service.NotificationService;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,17 +42,23 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Transactional
     public MarkReadResponse markAsRead(String userId, String notificationId) {
-        int updated = notificationRecordMapper.markAsRead(notificationId, userId);
+        LocalDateTime readAt = LocalDateTime.now();
+        int updated = notificationRecordMapper.markAsRead(notificationId, userId, readAt);
         if (updated == 0) {
             throw new BusinessException("通知不存在或无需更新已读状态");
         }
-        return new MarkReadResponse(notificationId, 1);
+        return new MarkReadResponse(notificationId, 1, readAt, notificationRecordMapper.countUnreadInAppByUserId(userId));
     }
 
     @Override
     @Transactional
     public MarkAllReadResponse markAllAsRead(String userId) {
-        return new MarkAllReadResponse(notificationRecordMapper.markAllAsRead(userId));
+        LocalDateTime readAt = LocalDateTime.now();
+        int updatedCount = notificationRecordMapper.markAllAsRead(userId, readAt);
+        return new MarkAllReadResponse(
+                updatedCount,
+                updatedCount > 0 ? readAt : null,
+                notificationRecordMapper.countUnreadInAppByUserId(userId));
     }
 
     private NotificationResponse toResponse(NotificationRecord record) {

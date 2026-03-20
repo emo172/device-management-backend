@@ -9,10 +9,12 @@ import com.jhun.backend.entity.BorrowRecord;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceStatusLog;
 import com.jhun.backend.entity.Reservation;
+import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.BorrowRecordMapper;
 import com.jhun.backend.mapper.DeviceMapper;
 import com.jhun.backend.mapper.DeviceStatusLogMapper;
 import com.jhun.backend.mapper.ReservationMapper;
+import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
@@ -36,16 +38,19 @@ public class BorrowServiceImpl implements BorrowService {
     private final ReservationMapper reservationMapper;
     private final DeviceMapper deviceMapper;
     private final DeviceStatusLogMapper deviceStatusLogMapper;
+    private final UserMapper userMapper;
 
     public BorrowServiceImpl(
             BorrowRecordMapper borrowRecordMapper,
             ReservationMapper reservationMapper,
             DeviceMapper deviceMapper,
-            DeviceStatusLogMapper deviceStatusLogMapper) {
+            DeviceStatusLogMapper deviceStatusLogMapper,
+            UserMapper userMapper) {
         this.borrowRecordMapper = borrowRecordMapper;
         this.reservationMapper = reservationMapper;
         this.deviceMapper = deviceMapper;
         this.deviceStatusLogMapper = deviceStatusLogMapper;
+        this.userMapper = userMapper;
     }
 
     @Override
@@ -236,11 +241,16 @@ public class BorrowServiceImpl implements BorrowService {
     }
 
     private BorrowRecordResponse toResponse(BorrowRecord borrowRecord) {
+        Device device = deviceMapper.selectById(borrowRecord.getDeviceId());
+        User user = userMapper.selectById(borrowRecord.getUserId());
         return new BorrowRecordResponse(
                 borrowRecord.getId(),
                 borrowRecord.getReservationId(),
                 borrowRecord.getDeviceId(),
+                device == null ? null : device.getName(),
+                device == null ? null : device.getDeviceNumber(),
                 borrowRecord.getUserId(),
+                resolveUserName(user),
                 borrowRecord.getBorrowTime(),
                 borrowRecord.getReturnTime(),
                 borrowRecord.getExpectedReturnTime(),
@@ -250,6 +260,19 @@ public class BorrowServiceImpl implements BorrowService {
                 borrowRecord.getRemark(),
                 borrowRecord.getOperatorId(),
                 borrowRecord.getReturnOperatorId());
+    }
+
+    /**
+     * 借还记录页优先展示实名，只有实名为空时才回退用户名，避免前端再次复制同一套展示兜底逻辑。
+     */
+    private String resolveUserName(User user) {
+        if (user == null) {
+            return null;
+        }
+        if (user.getRealName() != null && !user.getRealName().isBlank()) {
+            return user.getRealName();
+        }
+        return user.getUsername();
     }
 
     /**
