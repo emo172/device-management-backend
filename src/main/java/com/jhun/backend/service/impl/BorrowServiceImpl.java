@@ -19,6 +19,10 @@ import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -163,9 +167,15 @@ public class BorrowServiceImpl implements BorrowService {
         int safeSize = Math.max(size, 1);
         int offset = (safePage - 1) * safeSize;
         long total = borrowRecordMapper.countByConditions(status, visibleUserId);
-        List<BorrowRecordResponse> records = borrowRecordMapper.findPageByConditions(status, visibleUserId, safeSize, offset)
+        List<BorrowRecord> borrowRecords = borrowRecordMapper.findPageByConditions(status, visibleUserId, safeSize, offset);
+        Map<String, Device> deviceMap = loadDeviceMap(borrowRecords.stream().map(BorrowRecord::getDeviceId).toList());
+        Map<String, User> userMap = loadUserMap(borrowRecords.stream().map(BorrowRecord::getUserId).toList());
+        List<BorrowRecordResponse> records = borrowRecords
                 .stream()
-                .map(this::toResponse)
+                .map(borrowRecord -> toResponse(
+                        borrowRecord,
+                        deviceMap.get(borrowRecord.getDeviceId()),
+                        userMap.get(borrowRecord.getUserId())))
                 .toList();
         return new BorrowRecordPageResponse(total, records);
     }
@@ -243,6 +253,10 @@ public class BorrowServiceImpl implements BorrowService {
     private BorrowRecordResponse toResponse(BorrowRecord borrowRecord) {
         Device device = deviceMapper.selectById(borrowRecord.getDeviceId());
         User user = userMapper.selectById(borrowRecord.getUserId());
+        return toResponse(borrowRecord, device, user);
+    }
+
+    private BorrowRecordResponse toResponse(BorrowRecord borrowRecord, Device device, User user) {
         return new BorrowRecordResponse(
                 borrowRecord.getId(),
                 borrowRecord.getReservationId(),
@@ -260,6 +274,24 @@ public class BorrowServiceImpl implements BorrowService {
                 borrowRecord.getRemark(),
                 borrowRecord.getOperatorId(),
                 borrowRecord.getReturnOperatorId());
+    }
+
+    private Map<String, Device> loadDeviceMap(List<String> deviceIds) {
+        List<String> distinctIds = deviceIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            return Map.of();
+        }
+        return deviceMapper.selectBatchIds(distinctIds).stream()
+                .collect(Collectors.toMap(Device::getId, Function.identity()));
+    }
+
+    private Map<String, User> loadUserMap(List<String> userIds) {
+        List<String> distinctIds = userIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectBatchIds(distinctIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
     }
 
     /**

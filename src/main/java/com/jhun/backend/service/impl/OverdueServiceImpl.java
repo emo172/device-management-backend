@@ -21,7 +21,11 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -73,9 +77,15 @@ public class OverdueServiceImpl implements OverdueService {
         int safeSize = Math.max(size, 1);
         int offset = (safePage - 1) * safeSize;
         long total = overdueRecordMapper.countByConditions(processingStatus, visibleUserId);
-        List<OverdueRecordResponse> records = overdueRecordMapper.findPageByConditions(processingStatus, visibleUserId, safeSize, offset)
+        List<OverdueRecord> overdueRecords = overdueRecordMapper.findPageByConditions(processingStatus, visibleUserId, safeSize, offset);
+        Map<String, User> userMap = loadUserMap(overdueRecords.stream().map(OverdueRecord::getUserId).toList());
+        Map<String, Device> deviceMap = loadDeviceMap(overdueRecords.stream().map(OverdueRecord::getDeviceId).toList());
+        List<OverdueRecordResponse> records = overdueRecords
                 .stream()
-                .map(this::toResponse)
+                .map(overdueRecord -> toResponse(
+                        overdueRecord,
+                        userMap.get(overdueRecord.getUserId()),
+                        deviceMap.get(overdueRecord.getDeviceId())))
                 .toList();
         return new OverdueRecordPageResponse(total, records);
     }
@@ -395,6 +405,10 @@ public class OverdueServiceImpl implements OverdueService {
     private OverdueRecordResponse toResponse(OverdueRecord overdueRecord) {
         User user = userMapper.selectById(overdueRecord.getUserId());
         Device device = deviceMapper.selectById(overdueRecord.getDeviceId());
+        return toResponse(overdueRecord, user, device);
+    }
+
+    private OverdueRecordResponse toResponse(OverdueRecord overdueRecord, User user, Device device) {
         return new OverdueRecordResponse(
                 overdueRecord.getId(),
                 overdueRecord.getBorrowRecordId(),
@@ -413,6 +427,24 @@ public class OverdueServiceImpl implements OverdueService {
                 overdueRecord.getCompensationAmount(),
                 overdueRecord.getNotificationSent(),
                 overdueRecord.getCreatedAt());
+    }
+
+    private Map<String, Device> loadDeviceMap(List<String> deviceIds) {
+        List<String> distinctIds = deviceIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            return Map.of();
+        }
+        return deviceMapper.selectBatchIds(distinctIds).stream()
+                .collect(Collectors.toMap(Device::getId, Function.identity()));
+    }
+
+    private Map<String, User> loadUserMap(List<String> userIds) {
+        List<String> distinctIds = userIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectBatchIds(distinctIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
     }
 
     /**
