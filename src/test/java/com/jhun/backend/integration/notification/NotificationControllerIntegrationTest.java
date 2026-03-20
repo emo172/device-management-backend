@@ -117,7 +117,24 @@ class NotificationControllerIntegrationTest {
         mockMvc.perform(put("/api/notifications/{id}/read", notification.getId())
                         .header("Authorization", bearer(user)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.readFlag").value(1));
+                .andExpect(jsonPath("$.data.readFlag").value(1))
+                .andExpect(jsonPath("$.data.readAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.unreadCount").value(0));
+
+        mockMvc.perform(get("/api/notifications/unread-count")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.unreadCount").value(0));
+
+        /*
+         * 已读动作不仅要更新动作响应，还要让后续未读数接口与通知列表回显保持一致，
+         * 否则前端 Header 角标和通知中心会出现“按钮显示已读、列表仍是未读”的双真相源问题。
+         */
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].readFlag").value(1))
+                .andExpect(jsonPath("$.data[0].readAt").isNotEmpty());
     }
 
     /**
@@ -142,11 +159,31 @@ class NotificationControllerIntegrationTest {
         User user = createUser("notice-user-3", "notice3@example.com");
         insertNotification(user.getId(), "IN_APP", 0);
         insertNotification(user.getId(), "IN_APP", 0);
+        insertNotification(user.getId(), "EMAIL", 0);
 
         mockMvc.perform(put("/api/notifications/read-all")
                         .header("Authorization", bearer(user)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.updatedCount").value(2));
+                .andExpect(jsonPath("$.data.updatedCount").value(2))
+                .andExpect(jsonPath("$.data.readAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.unreadCount").value(0));
+
+        mockMvc.perform(get("/api/notifications/unread-count")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.unreadCount").value(0));
+
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].channel").value("EMAIL"))
+                .andExpect(jsonPath("$.data[0].readFlag").value(0))
+                .andExpect(jsonPath("$.data[1].channel").value("IN_APP"))
+                .andExpect(jsonPath("$.data[1].readFlag").value(1))
+                .andExpect(jsonPath("$.data[1].readAt").isNotEmpty())
+                .andExpect(jsonPath("$.data[2].channel").value("IN_APP"))
+                .andExpect(jsonPath("$.data[2].readFlag").value(1))
+                .andExpect(jsonPath("$.data[2].readAt").isNotEmpty());
     }
 
     private User createUser(String username, String email) {
@@ -167,6 +204,7 @@ class NotificationControllerIntegrationTest {
 
     private NotificationRecord insertNotification(String userId, String channel, Integer readFlag) {
         NotificationRecord record = new NotificationRecord();
+        LocalDateTime createdAt = LocalDateTime.of(2026, 3, 20, 9, 0).plusMinutes(notificationRecordMapper.selectCount(null));
         record.setId(UuidUtil.randomUuid());
         record.setUserId(userId);
         record.setNotificationType("VERIFY_CODE");
@@ -179,6 +217,9 @@ class NotificationControllerIntegrationTest {
         record.setTemplateVars("{}");
         record.setRelatedId("related-default");
         record.setRelatedType("TEST");
+        record.setSentAt(createdAt);
+        record.setCreatedAt(createdAt);
+        record.setUpdatedAt(createdAt);
         notificationRecordMapper.insert(record);
         return record;
     }

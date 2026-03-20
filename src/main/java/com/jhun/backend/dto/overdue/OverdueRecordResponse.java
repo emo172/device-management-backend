@@ -15,7 +15,10 @@ import java.time.LocalDateTime;
  * @param id 逾期记录 ID
  * @param borrowRecordId 关联借还记录 ID
  * @param userId 逾期用户 ID
+ * @param userName 逾期用户展示名；优先使用实名，实名为空时回退用户名
  * @param deviceId 逾期设备 ID
+ * @param deviceName 逾期设备名称；用于让前端直接展示真实设备信息而不是自行拼接字段
+ * @param deviceNumber 逾期设备编号；供管理端快速定位实物设备
  * @param overdueHours 逾期小时数
  * @param overdueDays 逾期天数
  * @param processingStatus 处理状态
@@ -31,7 +34,10 @@ public record OverdueRecordResponse(
         String id,
         String borrowRecordId,
         String userId,
+        String userName,
         String deviceId,
+        String deviceName,
+        String deviceNumber,
         Integer overdueHours,
         Integer overdueDays,
         String processingStatus,

@@ -201,6 +201,34 @@ class OverdueControllerIntegrationTest {
     }
 
     /**
+     * 验证逾期列表与详情会回传设备名称、设备编号和用户展示名，避免前端只能拿到 ID 后被迫猜测展示文案。
+     */
+    @Test
+    void shouldReturnOverdueSnapshotsForCurrentPage() throws Exception {
+        User user = createUser("odu-snapshot", "od-user-snapshot@example.com", "USER");
+        User deviceAdmin = createUser("odda-snapshot", "od-device-admin-snapshot@example.com", "DEVICE_ADMIN");
+        Device device = createDevice();
+        String borrowRecordId = createBorrowRecord(user, deviceAdmin, device, LocalDateTime.of(2026, 4, 3, 11, 0, 0));
+
+        overdueAutoDetectProcessor.detectAt(LocalDateTime.of(2026, 4, 3, 17, 0, 0));
+        String overdueRecordId = loadOverdueRecordByBorrowRecordId(borrowRecordId).get("id").toString();
+
+        mockMvc.perform(get("/api/overdue-records")
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records[0].deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.records[0].deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.records[0].userName").value(user.getUsername()));
+
+        mockMvc.perform(get("/api/overdue-records/{id}", overdueRecordId)
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.userName").value(user.getUsername()));
+    }
+
+    /**
      * 验证普通用户详情接口不能查看他人逾期记录，避免详情接口成为绕过列表过滤的越权入口。
      */
     @Test

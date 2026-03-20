@@ -531,13 +531,19 @@ class BorrowControllerIntegrationTest {
                         .param("status", "BORROWED"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(1))
-                .andExpect(jsonPath("$.data.records[0].id").value(borrowRecordId));
+                .andExpect(jsonPath("$.data.records[0].id").value(borrowRecordId))
+                .andExpect(jsonPath("$.data.records[0].deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.records[0].deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.records[0].userName").value(user.getRealName()));
 
         mockMvc.perform(get("/api/borrow-records/{id}", borrowRecordId)
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(borrowRecordId))
                 .andExpect(jsonPath("$.data.deviceId").value(device.getId()))
+                .andExpect(jsonPath("$.data.deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.userName").value(user.getRealName()))
                 .andExpect(jsonPath("$.data.status").value("BORROWED"));
     }
 

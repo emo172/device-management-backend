@@ -92,13 +92,13 @@ public class ReservationServiceImpl implements ReservationService {
         this.transactionTemplate = transactionTemplate;
     }
 
-    @Override
     /**
      * 查询预约列表。
      * <p>
      * 仅允许 USER、DEVICE_ADMIN、SYSTEM_ADMIN 三角色访问；USER 只能看到本人预约，管理角色保留管理视角的全量列表。
      * 这里统一在服务层执行角色白名单校验与可见范围裁决，避免出现“非 USER 即管理视角”的越权漏洞。
      */
+    @Override
     public ReservationPageResponse listReservations(String userId, String role, int page, int size) {
         ensureSupportedReservationViewerRole(role);
         String visibleUserId = "USER".equals(role) ? userId : null;
@@ -118,12 +118,12 @@ public class ReservationServiceImpl implements ReservationService {
         return new ReservationPageResponse(total, records);
     }
 
-    @Override
     /**
      * 查询预约详情。
      * <p>
      * 详情口径与列表一致：仅允许三角色访问，普通用户只能查看本人预约，管理角色可以查看管理视角详情。
      */
+    @Override
     public ReservationDetailResponse getReservationDetail(String reservationId, String userId, String role) {
         ensureSupportedReservationViewerRole(role);
         Reservation reservation = mustFindReservation(reservationId);
@@ -131,14 +131,14 @@ public class ReservationServiceImpl implements ReservationService {
         return toDetailResponse(reservation);
     }
 
-    @Override
-    @Transactional
     /**
      * 取消预约。
      * <p>
      * 普通用户只能在开始前超过 24 小时取消本人预约；管理角色可以处理 24 小时内但尚未开始的预约；
      * 一旦预约已经开始或已经完成签到，则任何角色都不能通过该接口直接取消，以避免破坏签到与借还链路的时间真相。
      */
+    @Override
+    @Transactional
     public ReservationDetailResponse cancelReservation(String reservationId, String operatorId, String role, CancelReservationRequest request) {
         ensureSupportedReservationViewerRole(role);
         Reservation reservation = mustFindReservation(reservationId);
@@ -166,11 +166,23 @@ public class ReservationServiceImpl implements ReservationService {
         return toDetailResponse(reservation);
     }
 
+    /**
+     * 创建本人预约。
+     * <p>
+     * 本人预约统一固定为 `SELF` 模式，并把创建人同时记录为当前登录用户，
+     * 避免普通用户绕过控制层约束把自己伪装成代预约操作人。
+     */
     @Override
     public ReservationResponse createReservation(String userId, String createdBy, CreateReservationRequest request) {
         return createReservationWithMode(userId, createdBy, "SELF", null, request);
     }
 
+    /**
+     * 按指定预约模式创建预约。
+     * <p>
+     * 这里是预约主链路的统一落库入口：负责冲突检测、审批模式快照、初始状态、站内通知和最终动作回包组装。
+     * 本人预约、代预约与批量预约都复用它，确保三条入口不会在审批口径上继续漂移。
+     */
     @Override
     public ReservationResponse createReservationWithMode(
             String userId,
@@ -228,6 +240,12 @@ public class ReservationServiceImpl implements ReservationService {
         }
     }
 
+    /**
+     * 创建代预约。
+     * <p>
+     * 只有 `SYSTEM_ADMIN` 才能代 `USER` 预约，因此这里先做角色和目标用户校验，
+     * 再把模式显式固定为 `ON_BEHALF`，避免代预约链路偷偷复用本人预约口径。
+     */
     @Override
     public ReservationResponse createProxyReservation(String operatorId, String operatorRole, ProxyReservationRequest request) {
         if (!"SYSTEM_ADMIN".equals(operatorRole)) {
@@ -251,8 +269,14 @@ public class ReservationServiceImpl implements ReservationService {
                         request.remark()));
     }
 
+    /**
+     * 执行预约签到。
+     * <p>
+     * 签到链路既要区分正常签到和超时签到，也要在超过 60 分钟后把预约推进为 `EXPIRED`。
+     * 这里显式对 `BusinessException` 关闭事务回滚，是为了让“签到超时”这种业务拒绝在返回 400 的同时仍能把过期状态和通知稳定落库。
+     */
     @Override
-    @Transactional
+    @Transactional(noRollbackFor = BusinessException.class)
     public ReservationResponse checkIn(String reservationId, String userId, String role, CheckInRequest request) {
         if (!"USER".equals(role)) {
             throw new BusinessException("只有普通用户可以执行签到");
@@ -292,6 +316,11 @@ public class ReservationServiceImpl implements ReservationService {
         return toResponse(reservation);
     }
 
+    /**
+     * 处理待人工预约。
+     * <p>
+     * 当预约已进入 `PENDING_MANUAL` 时，设备管理员要在这里给出最终裁决：通过则回到 `APPROVED`，拒绝则进入 `CANCELLED` 并补发取消通知。
+     */
     @Override
     @Transactional
     public ReservationResponse manualProcess(String reservationId, String operatorId, String role, ManualProcessRequest request) {
@@ -317,6 +346,12 @@ public class ReservationServiceImpl implements ReservationService {
         return toResponse(reservation);
     }
 
+    /**
+     * 执行设备管理员第一审。
+     * <p>
+     * 第一审只负责把预约从 `PENDING_DEVICE_APPROVAL` 推进到 `PENDING_SYSTEM_APPROVAL` 或终态；
+     * 这里不能让前端自行推导审批链结果，因此更新落库后要立刻返回统一 workflow context。
+     */
     @Override
     @Transactional
     public ReservationResponse deviceApprove(String reservationId, String approverId, String role, AuditReservationRequest request) {
@@ -346,6 +381,13 @@ public class ReservationServiceImpl implements ReservationService {
         return toResponse(reservation);
     }
 
+    /**
+     * 执行系统管理员第二审。
+     * <p>
+     * `DEVICE_THEN_SYSTEM` 模式下，第二审是真正把预约推进到最终审批结论的最后一步：
+     * 通过时进入 `APPROVED`，拒绝时进入 `REJECTED`。这里既要守住“双审账号隔离”规则，
+     * 也要把二审审批人、审批时间与最终状态一次性回传给前端，避免待审批页和详情页在动作完成后再次查库拼字段。
+     */
     @Override
     @Transactional
     public ReservationResponse systemApprove(String reservationId, String approverId, String role, AuditReservationRequest request) {
@@ -359,6 +401,10 @@ public class ReservationServiceImpl implements ReservationService {
         if (approverId.equals(reservation.getDeviceApproverId())) {
             throw new BusinessException("同一账号不能完成双审两步");
         }
+        /*
+         * 第二审是双审批链路的收口点：审批人、审批时间和最终状态必须在同一事务内落库，
+         * 否则前端可能看到“状态已通过，但审批轨迹字段还是空值”的半完成快照。
+         */
         reservation.setSystemApproverId(approverId);
         reservation.setSystemApprovedAt(LocalDateTime.now());
         reservation.setSystemApprovalRemark(request.remark());
@@ -425,19 +471,51 @@ public class ReservationServiceImpl implements ReservationService {
         }
     }
 
+    /**
+     * 统一把动作型接口的返回值提升为“可直接继续渲染页面”的 workflow context。
+     * <p>
+     * 创建、一审、二审、签到和人工处理都可能改变审批人、签到时间、取消信息或设备关联字段；
+     * 如果这里只返回轻量状态码，前端就不得不在每个页面自己保留旧快照或再次请求详情。
+     * 因此这里统一回读最新预约详情，把动作结果收敛成与详情页同口径的动作响应。
+     */
     private ReservationResponse toResponse(Reservation reservation) {
+        /*
+         * 必须基于最新落库事实重新组装返回值：
+         * 这样既能拿到数据库已经写入的审批/签到时间，也能把设备名、预约人和审批人一并返回给前端页面继续渲染。
+         */
+        ReservationDetailResponse detailResponse = toDetailResponse(mustFindReservation(reservation.getId()));
         return new ReservationResponse(
-                reservation.getId(),
-                reservation.getBatchId(),
-                reservation.getUserId(),
-                reservation.getCreatedBy(),
-                reservation.getReservationMode(),
-                reservation.getDeviceId(),
-                reservation.getStatus(),
-                reservation.getSignStatus(),
-                reservation.getApprovalModeSnapshot(),
-                reservation.getDeviceApproverId(),
-                reservation.getSystemApproverId());
+                detailResponse.id(),
+                detailResponse.batchId(),
+                detailResponse.userId(),
+                detailResponse.userName(),
+                detailResponse.createdBy(),
+                detailResponse.createdByName(),
+                detailResponse.reservationMode(),
+                detailResponse.deviceId(),
+                detailResponse.deviceName(),
+                detailResponse.deviceNumber(),
+                detailResponse.deviceStatus(),
+                detailResponse.startTime(),
+                detailResponse.endTime(),
+                detailResponse.purpose(),
+                detailResponse.remark(),
+                detailResponse.status(),
+                detailResponse.signStatus(),
+                detailResponse.approvalModeSnapshot(),
+                detailResponse.deviceApproverId(),
+                detailResponse.deviceApproverName(),
+                detailResponse.deviceApprovedAt(),
+                detailResponse.deviceApprovalRemark(),
+                detailResponse.systemApproverId(),
+                detailResponse.systemApproverName(),
+                detailResponse.systemApprovedAt(),
+                detailResponse.systemApprovalRemark(),
+                detailResponse.cancelReason(),
+                detailResponse.cancelTime(),
+                detailResponse.checkedInAt(),
+                detailResponse.createdAt(),
+                detailResponse.updatedAt());
     }
 
     /**

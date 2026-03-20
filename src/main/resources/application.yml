@@ -61,8 +61,10 @@ verification-code:
   daily-limit: 10
 
 storage:
+  # 本地上传统一落在 upload-dir，WebMvcConfig 会把该目录映射成 `/files/**` 静态资源出口。
   upload-dir: uploads
-  public-base-url: http://localhost:8080/files
+  # 数据库存储相对路径而不是固定主机名，避免环境切换时把本地地址写死到业务数据里。
+  public-base-url: /files
 
 ai:
   enabled: false
@@ -71,4 +73,5 @@ ai:
 
 app:
   cors:
+    # 使用逗号分隔的白名单源，供 WebMvc 与 Security 共享同一跨域真相源。
     allowed-origins: http://localhost:3000,http://localhost:5173

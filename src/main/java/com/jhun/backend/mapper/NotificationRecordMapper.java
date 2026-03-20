@@ -2,6 +2,7 @@ package com.jhun.backend.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.jhun.backend.entity.NotificationRecord;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -19,8 +20,11 @@ public interface NotificationRecordMapper extends BaseMapper<NotificationRecord>
     long countUnreadInAppByUserId(@Param("userId") String userId);
 
     /** 将单条站内信标记为已读。 */
-    int markAsRead(@Param("notificationId") String notificationId, @Param("userId") String userId);
+    int markAsRead(
+            @Param("notificationId") String notificationId,
+            @Param("userId") String userId,
+            @Param("readAt") LocalDateTime readAt);
 
     /** 将用户全部站内信标记为已读。 */
-    int markAllAsRead(@Param("userId") String userId);
+    int markAllAsRead(@Param("userId") String userId, @Param("readAt") LocalDateTime readAt);
 }

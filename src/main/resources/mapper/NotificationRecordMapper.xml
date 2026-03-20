@@ -48,8 +48,8 @@
     <update id="markAsRead">
         UPDATE notification_record
         SET read_flag = 1,
-            read_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
+            read_at = #{readAt},
+            updated_at = #{readAt}
         WHERE id = #{notificationId}
           AND user_id = #{userId}
           AND channel = 'IN_APP'
@@ -63,8 +63,8 @@
     <update id="markAllAsRead">
         UPDATE notification_record
         SET read_flag = 1,
-            read_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
+            read_at = #{readAt},
+            updated_at = #{readAt}
         WHERE user_id = #{userId}
           AND channel = 'IN_APP'
           AND read_flag = 0

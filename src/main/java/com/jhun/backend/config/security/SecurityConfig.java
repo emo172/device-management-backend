@@ -5,6 +5,7 @@ import static org.springframework.security.config.Customizer.withDefaults;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -47,17 +48,25 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
+                .cors(withDefaults())
                 .csrf(csrf -> csrf.disable())
                 .httpBasic(withDefaults())
                 .formLogin(form -> form.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(exception -> exception.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .authorizeHttpRequests(authorize -> authorize
+                        /*
+                         * 预检请求和 `/files/devices/**` 都属于前后端联调基础设施：
+                         * 前者要先于鉴权完成浏览器协商，后者只承载设备图片公开访问，
+                         * 因此这里必须精确放行设备图片目录，而不能继续把整个上传根目录匿名暴露出去。
+                         */
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(
                                 "/api/auth/register",
                                 "/api/auth/login",
                                 "/api/auth/verification-code",
                                 "/api/auth/reset-password",
+                                "/files/devices/**",
                                 "/error")
                         .permitAll()
                         .requestMatchers("/api/admin/users/**", "/api/admin/roles/**").hasRole("SYSTEM_ADMIN")

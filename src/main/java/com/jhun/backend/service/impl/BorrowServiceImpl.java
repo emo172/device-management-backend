@@ -9,14 +9,20 @@ import com.jhun.backend.entity.BorrowRecord;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceStatusLog;
 import com.jhun.backend.entity.Reservation;
+import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.BorrowRecordMapper;
 import com.jhun.backend.mapper.DeviceMapper;
 import com.jhun.backend.mapper.DeviceStatusLogMapper;
 import com.jhun.backend.mapper.ReservationMapper;
+import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,16 +42,19 @@ public class BorrowServiceImpl implements BorrowService {
     private final ReservationMapper reservationMapper;
     private final DeviceMapper deviceMapper;
     private final DeviceStatusLogMapper deviceStatusLogMapper;
+    private final UserMapper userMapper;
 
     public BorrowServiceImpl(
             BorrowRecordMapper borrowRecordMapper,
             ReservationMapper reservationMapper,
             DeviceMapper deviceMapper,
-            DeviceStatusLogMapper deviceStatusLogMapper) {
+            DeviceStatusLogMapper deviceStatusLogMapper,
+            UserMapper userMapper) {
         this.borrowRecordMapper = borrowRecordMapper;
         this.reservationMapper = reservationMapper;
         this.deviceMapper = deviceMapper;
         this.deviceStatusLogMapper = deviceStatusLogMapper;
+        this.userMapper = userMapper;
     }
 
     @Override
@@ -158,9 +167,15 @@ public class BorrowServiceImpl implements BorrowService {
         int safeSize = Math.max(size, 1);
         int offset = (safePage - 1) * safeSize;
         long total = borrowRecordMapper.countByConditions(status, visibleUserId);
-        List<BorrowRecordResponse> records = borrowRecordMapper.findPageByConditions(status, visibleUserId, safeSize, offset)
+        List<BorrowRecord> borrowRecords = borrowRecordMapper.findPageByConditions(status, visibleUserId, safeSize, offset);
+        Map<String, Device> deviceMap = loadDeviceMap(borrowRecords.stream().map(BorrowRecord::getDeviceId).toList());
+        Map<String, User> userMap = loadUserMap(borrowRecords.stream().map(BorrowRecord::getUserId).toList());
+        List<BorrowRecordResponse> records = borrowRecords
                 .stream()
-                .map(this::toResponse)
+                .map(borrowRecord -> toResponse(
+                        borrowRecord,
+                        deviceMap.get(borrowRecord.getDeviceId()),
+                        userMap.get(borrowRecord.getUserId())))
                 .toList();
         return new BorrowRecordPageResponse(total, records);
     }
@@ -236,11 +251,20 @@ public class BorrowServiceImpl implements BorrowService {
     }
 
     private BorrowRecordResponse toResponse(BorrowRecord borrowRecord) {
+        Device device = deviceMapper.selectById(borrowRecord.getDeviceId());
+        User user = userMapper.selectById(borrowRecord.getUserId());
+        return toResponse(borrowRecord, device, user);
+    }
+
+    private BorrowRecordResponse toResponse(BorrowRecord borrowRecord, Device device, User user) {
         return new BorrowRecordResponse(
                 borrowRecord.getId(),
                 borrowRecord.getReservationId(),
                 borrowRecord.getDeviceId(),
+                device == null ? null : device.getName(),
+                device == null ? null : device.getDeviceNumber(),
                 borrowRecord.getUserId(),
+                resolveUserName(user),
                 borrowRecord.getBorrowTime(),
                 borrowRecord.getReturnTime(),
                 borrowRecord.getExpectedReturnTime(),
@@ -250,6 +274,37 @@ public class BorrowServiceImpl implements BorrowService {
                 borrowRecord.getRemark(),
                 borrowRecord.getOperatorId(),
                 borrowRecord.getReturnOperatorId());
+    }
+
+    private Map<String, Device> loadDeviceMap(List<String> deviceIds) {
+        List<String> distinctIds = deviceIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            return Map.of();
+        }
+        return deviceMapper.selectBatchIds(distinctIds).stream()
+                .collect(Collectors.toMap(Device::getId, Function.identity()));
+    }
+
+    private Map<String, User> loadUserMap(List<String> userIds) {
+        List<String> distinctIds = userIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectBatchIds(distinctIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
+    }
+
+    /**
+     * 借还记录页优先展示实名，只有实名为空时才回退用户名，避免前端再次复制同一套展示兜底逻辑。
+     */
+    private String resolveUserName(User user) {
+        if (user == null) {
+            return null;
+        }
+        if (user.getRealName() != null && !user.getRealName().isBlank()) {
+            return user.getRealName();
+        }
+        return user.getUsername();
     }
 
     /**
