@@ -169,6 +169,8 @@ public class DeviceServiceImpl implements DeviceService {
      * 上传设备图片。
      * <p>
      * 图片存储成功后立即回写设备记录，确保详情页总能以设备表中的 image_url 作为唯一真相源。
+     * 存储组件会在同一设备重复上传时清理旧图，因此这里不再额外维护“历史图片列表”，
+     * 避免设备表已经切到新图、磁盘上却仍长期堆积旧文件的分裂状态。
      */
     @Override
     @Transactional
@@ -263,7 +265,8 @@ public class DeviceServiceImpl implements DeviceService {
                 categoryName,
                 device.getStatus(),
                 device.getDescription(),
-                device.getLocation());
+                device.getLocation(),
+                device.getImageUrl());
     }
 
     private DeviceDetailResponse toDetailResponse(Device device, String categoryName) {
