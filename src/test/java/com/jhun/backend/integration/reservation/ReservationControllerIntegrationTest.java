@@ -31,8 +31,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -66,6 +68,8 @@ class ReservationControllerIntegrationTest {
     private PasswordEncoder passwordEncoder;
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private MockMvc mockMvc;
@@ -434,6 +438,40 @@ class ReservationControllerIntegrationTest {
     }
 
     /**
+     * 验证普通用户在固定 `page=1,size=5` 下的预约列表基线。
+     * <p>
+     * 这里显式把分页参数钉死为前端默认值，避免测试只在 `size=10` 时通过、而真实前端请求 `size=5` 时才暴露分页或排序问题。
+     */
+    @Test
+    void shouldListFirstFiveOwnReservationsForUserWithFixedPaging() throws Exception {
+        User currentUser = createUser("rsv-page5-u1", "reserve-page5-user-1@example.com", "USER");
+        User anotherUser = createUser("rsv-page5-u2", "reserve-page5-user-2@example.com", "USER");
+        Device device = createDevice("DEVICE_ONLY");
+        LocalDateTime firstStart = futureTime(25, 9, 0);
+
+        createReservation(currentUser, device, formatTime(firstStart), formatTime(firstStart.plusHours(1)), "本人分页预约-1", "page=1,size=5");
+        createReservation(currentUser, device, formatTime(firstStart.plusMinutes(90)), formatTime(firstStart.plusMinutes(150)), "本人分页预约-2", "page=1,size=5");
+        createReservation(currentUser, device, formatTime(firstStart.plusMinutes(180)), formatTime(firstStart.plusMinutes(240)), "本人分页预约-3", "page=1,size=5");
+        createReservation(currentUser, device, formatTime(firstStart.plusMinutes(270)), formatTime(firstStart.plusMinutes(330)), "本人分页预约-4", "page=1,size=5");
+        createReservation(currentUser, device, formatTime(firstStart.plusMinutes(360)), formatTime(firstStart.plusMinutes(420)), "本人分页预约-5", "page=1,size=5");
+        createReservation(currentUser, device, formatTime(firstStart.plusMinutes(450)), formatTime(firstStart.plusMinutes(510)), "本人分页预约-6", "page=1,size=5");
+        createReservation(anotherUser, device, formatTime(firstStart.plusMinutes(540)), formatTime(firstStart.plusMinutes(600)), "他人分页预约", "不应出现在本人视角");
+
+        mockMvc.perform(get("/api/reservations")
+                        .header("Authorization", bearer(currentUser, "USER"))
+                        .param("page", "1")
+                        .param("size", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(6))
+                .andExpect(jsonPath("$.data.records.length()").value(5))
+                .andExpect(jsonPath("$.data.records[0].purpose").value("本人分页预约-6"))
+                .andExpect(jsonPath("$.data.records[1].purpose").value("本人分页预约-5"))
+                .andExpect(jsonPath("$.data.records[2].purpose").value("本人分页预约-4"))
+                .andExpect(jsonPath("$.data.records[3].purpose").value("本人分页预约-3"))
+                .andExpect(jsonPath("$.data.records[4].purpose").value("本人分页预约-2"));
+    }
+
+    /**
      * 验证普通用户不能查看他人预约详情，防止详情接口绕过列表页的本人过滤规则。
      */
     @Test
@@ -518,6 +556,47 @@ class ReservationControllerIntegrationTest {
     }
 
     /**
+     * 验证系统管理员在固定 `page=1,size=5` 下仍能拿到管理视角首页数据。
+     * <p>
+     * 这里用 6 条最新样本把首页裁成 5 条，确保管理视角在真实分页参数下既能返回 200，也能维持稳定排序。
+     */
+    @Test
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.BEFORE_METHOD)
+    void shouldListFirstFiveReservationsForSystemAdminWithFixedPaging() throws Exception {
+        User userOne = createUser("rsv-mgr-page5-u1", "reserve-manager-page5-user-1@example.com", "USER");
+        User userTwo = createUser("rsv-mgr-page5-u2", "reserve-manager-page5-user-2@example.com", "USER");
+        User systemAdmin = createUser("rsv-mgr-page5-admin", "reserve-manager-page5-admin@example.com", "SYSTEM_ADMIN");
+        Device device = createDevice("DEVICE_ONLY");
+        LocalDateTime firstStart = futureTime(26, 9, 0);
+
+        createReservation(userOne, device, formatTime(firstStart), formatTime(firstStart.plusHours(1)), "管理分页预约-1", "page=1,size=5");
+        createReservation(userTwo, device, formatTime(firstStart.plusMinutes(90)), formatTime(firstStart.plusMinutes(150)), "管理分页预约-2", "page=1,size=5");
+        createReservation(userOne, device, formatTime(firstStart.plusMinutes(180)), formatTime(firstStart.plusMinutes(240)), "管理分页预约-3", "page=1,size=5");
+        createReservation(userTwo, device, formatTime(firstStart.plusMinutes(270)), formatTime(firstStart.plusMinutes(330)), "管理分页预约-4", "page=1,size=5");
+        createReservation(userOne, device, formatTime(firstStart.plusMinutes(360)), formatTime(firstStart.plusMinutes(420)), "管理分页预约-5", "page=1,size=5");
+        createReservation(userTwo, device, formatTime(firstStart.plusMinutes(450)), formatTime(firstStart.plusMinutes(510)), "管理分页预约-6", "page=1,size=5");
+
+        /*
+         * 这条回归必须固定断言首页 5 条和 total=6；如果继续复用共享 Spring 上下文，其他用例残留预约会挤占首页排序，
+         * 让这里测成“测试库历史数据谁更靠前”而不是“page=1,size=5 的管理分页契约”。
+         * 结合 application-test.yml 里每个测试上下文都会拿到独立随机 H2 库名，这里用方法级独立上下文最贴合该回归目标。
+         */
+        mockMvc.perform(get("/api/reservations")
+                        .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN"))
+                        .param("page", "1")
+                        .param("size", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(6))
+                .andExpect(jsonPath("$.data.records.length()").value(5))
+                .andExpect(jsonPath("$.data.records[0].purpose").value("管理分页预约-6"))
+                .andExpect(jsonPath("$.data.records[1].purpose").value("管理分页预约-5"))
+                .andExpect(jsonPath("$.data.records[2].purpose").value("管理分页预约-4"))
+                .andExpect(jsonPath("$.data.records[3].purpose").value("管理分页预约-3"))
+                .andExpect(jsonPath("$.data.records[4].purpose").value("管理分页预约-2"))
+                .andExpect(jsonPath("$.data.records[*].userName").value(hasItems(userOne.getUsername(), userTwo.getUsername())));
+    }
+
+    /**
      * 验证预约列表只对白名单三角色开放，防止任意伪造角色被当成管理视角读取全量预约。
      */
     @Test
@@ -529,6 +608,35 @@ class ReservationControllerIntegrationTest {
                         .param("page", "1")
                         .param("size", "10"))
                 .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 验证如果只是预约关联数据漂移到脏设备引用，固定分页列表会落成 400 业务异常。
+     * <p>
+     * 这条用例的目的不是制造 dev 500，而是明确区分“后续装配发现坏关联”与“SQL/schema 级故障”两类入口，
+     * 避免把脏数据触发的业务异常误判成当前开发环境里的 500。
+     */
+    @Test
+    void shouldReturnBadRequestForAssociationDriftOnFixedPaging() throws Exception {
+        User user = createUser("rsv-drift-u1", "reserve-drift-user-1@example.com", "USER");
+        Device device = createDevice("DEVICE_ONLY");
+        LocalDateTime startTime = futureTime(27, 9, 0);
+        String reservationId = createReservation(user, device, formatTime(startTime), formatTime(startTime.plusHours(1)), "脏关联预约", "设备引用漂移");
+
+        try {
+            jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY FALSE");
+            jdbcTemplate.update("UPDATE reservation SET device_id = ? WHERE id = ?", "ghost-device-id", reservationId);
+
+            mockMvc.perform(get("/api/reservations")
+                            .header("Authorization", bearer(user, "USER"))
+                            .param("page", "1")
+                            .param("size", "5"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message").value("设备不存在"));
+        } finally {
+            jdbcTemplate.update("UPDATE reservation SET device_id = ? WHERE id = ?", device.getId(), reservationId);
+            jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY TRUE");
+        }
     }
 
     /**

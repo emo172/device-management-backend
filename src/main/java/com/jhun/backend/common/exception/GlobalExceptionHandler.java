@@ -1,6 +1,8 @@
 package com.jhun.backend.common.exception;
 
 import com.jhun.backend.common.response.Result;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -12,10 +14,14 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * 全局异常处理器。
  * <p>
  * 统一把控制层抛出的异常转换为 {@link Result}，确保接口响应结构稳定；
- * 当前阶段先覆盖业务异常与兜底异常，后续可按模块细分校验异常、鉴权异常等处理逻辑。
+ * 当前实现已分别收口业务异常、访问拒绝、参数校验失败与未分类异常，
+ * 让客户端按可预期的失败语义接收统一文案，同时避免内部错误细节直接暴露给调用方。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    private static final String GENERIC_INTERNAL_ERROR_MESSAGE = "服务器内部错误，请稍后重试";
 
     /**
      * 处理业务异常并保留原始业务消息。
@@ -64,6 +70,8 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Result<Void>> handleException(Exception exception) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Result.error(exception.getMessage()));
+        log.error("接口发生未分类异常，已按统一 500 响应返回安全文案", exception);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Result.error(GENERIC_INTERNAL_ERROR_MESSAGE));
     }
 }

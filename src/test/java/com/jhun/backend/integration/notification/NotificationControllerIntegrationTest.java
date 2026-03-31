@@ -1,5 +1,6 @@
 package com.jhun.backend.integration.notification;
 
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -21,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -43,7 +45,7 @@ class NotificationControllerIntegrationTest {
     @Autowired
     private RoleMapper roleMapper;
 
-    @Autowired
+    @MockitoSpyBean
     private NotificationRecordMapper notificationRecordMapper;
 
     @Autowired
@@ -104,6 +106,38 @@ class NotificationControllerIntegrationTest {
                         .header("Authorization", bearer(user)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.unreadCount").value(2));
+    }
+
+    /**
+     * 验证当前用户没有任何通知记录时，未读角标会稳定返回 0，而不是空值或 500。
+     */
+    @Test
+    void shouldReturnZeroUnreadCountWhenNoNotificationRecords() throws Exception {
+        User user = createUser("notice-user-empty", "notice-empty@example.com");
+
+        mockMvc.perform(get("/api/notifications/unread-count")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.unreadCount").value(0));
+    }
+
+    /**
+     * 验证当未读统计链路在 mapper 层抛异常时，接口会暴露 500 失败路径。
+     * <p>
+     * 该用例用于稳定固化“后端统计子链路异常 -> unread-count 500”这一现象，
+     * 为后续区分“应用逻辑缺陷”与“开发环境库漂移”提供可重复证据。
+     */
+    @Test
+    void shouldExposeInternalServerErrorWhenUnreadCountMapperFails() throws Exception {
+        User user = createUser("notice-user-fail", "notice-fail@example.com");
+        doThrow(new RuntimeException("模拟未读统计查询失败"))
+                .when(notificationRecordMapper)
+                .countUnreadInAppByUserId(user.getId());
+
+        mockMvc.perform(get("/api/notifications/unread-count")
+                        .header("Authorization", bearer(user)))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.message").value("服务器内部错误，请稍后重试"));
     }
 
     /**
