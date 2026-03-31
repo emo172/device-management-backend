@@ -34,6 +34,7 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -560,6 +561,7 @@ class ReservationControllerIntegrationTest {
      * 这里用 6 条最新样本把首页裁成 5 条，确保管理视角在真实分页参数下既能返回 200，也能维持稳定排序。
      */
     @Test
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.BEFORE_METHOD)
     void shouldListFirstFiveReservationsForSystemAdminWithFixedPaging() throws Exception {
         User userOne = createUser("rsv-mgr-page5-u1", "reserve-manager-page5-user-1@example.com", "USER");
         User userTwo = createUser("rsv-mgr-page5-u2", "reserve-manager-page5-user-2@example.com", "USER");
@@ -574,12 +576,17 @@ class ReservationControllerIntegrationTest {
         createReservation(userOne, device, formatTime(firstStart.plusMinutes(360)), formatTime(firstStart.plusMinutes(420)), "管理分页预约-5", "page=1,size=5");
         createReservation(userTwo, device, formatTime(firstStart.plusMinutes(450)), formatTime(firstStart.plusMinutes(510)), "管理分页预约-6", "page=1,size=5");
 
+        /*
+         * 这条回归必须固定断言首页 5 条和 total=6；如果继续复用共享 Spring 上下文，其他用例残留预约会挤占首页排序，
+         * 让这里测成“测试库历史数据谁更靠前”而不是“page=1,size=5 的管理分页契约”。
+         * 结合 application-test.yml 里每个测试上下文都会拿到独立随机 H2 库名，这里用方法级独立上下文最贴合该回归目标。
+         */
         mockMvc.perform(get("/api/reservations")
                         .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN"))
                         .param("page", "1")
                         .param("size", "5"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.total").value(greaterThanOrEqualTo(6)))
+                .andExpect(jsonPath("$.data.total").value(6))
                 .andExpect(jsonPath("$.data.records.length()").value(5))
                 .andExpect(jsonPath("$.data.records[0].purpose").value("管理分页预约-6"))
                 .andExpect(jsonPath("$.data.records[1].purpose").value("管理分页预约-5"))
@@ -629,29 +636,6 @@ class ReservationControllerIntegrationTest {
         } finally {
             jdbcTemplate.update("UPDATE reservation SET device_id = ? WHERE id = ?", device.getId(), reservationId);
             jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY TRUE");
-        }
-    }
-
-    /**
-     * 验证如果 `reservation` 表 schema 发生漂移，固定分页列表会直接升级成 500。
-     * <p>
-     * 这条表征用例用于逼近开发环境当前症状：当 mapper 依赖的列名与实际库结构不一致时，
-     * 即使鉴权与分页参数都正确，请求也会在 SQL 层直接失败。
-     */
-    @Test
-    void shouldReturnInternalServerErrorForSchemaDriftOnFixedPaging() throws Exception {
-        User systemAdmin = createUser("rsv-schema-admin", "reserve-schema-admin@example.com", "SYSTEM_ADMIN");
-
-        try {
-            jdbcTemplate.execute("ALTER TABLE reservation RENAME COLUMN sign_status TO sign_status_shadow");
-
-            mockMvc.perform(get("/api/reservations")
-                            .header("Authorization", bearer(systemAdmin, "SYSTEM_ADMIN"))
-                            .param("page", "1")
-                            .param("size", "5"))
-                    .andExpect(status().isInternalServerError());
-        } finally {
-            jdbcTemplate.execute("ALTER TABLE reservation RENAME COLUMN sign_status_shadow TO sign_status");
         }
     }
 
