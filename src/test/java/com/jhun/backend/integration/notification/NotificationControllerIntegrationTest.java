@@ -136,7 +136,8 @@ class NotificationControllerIntegrationTest {
 
         mockMvc.perform(get("/api/notifications/unread-count")
                         .header("Authorization", bearer(user)))
-                .andExpect(status().isInternalServerError());
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.message").value("服务器内部错误，请稍后重试"));
     }
 
     /**
