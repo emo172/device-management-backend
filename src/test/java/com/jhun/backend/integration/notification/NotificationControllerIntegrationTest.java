@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.jhun.backend.config.security.JwtProperties;
 import com.jhun.backend.config.security.JwtTokenProvider;
 import com.jhun.backend.entity.NotificationRecord;
 import com.jhun.backend.entity.Role;
@@ -15,7 +16,13 @@ import com.jhun.backend.mapper.NotificationRecordMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Date;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -50,6 +57,9 @@ class NotificationControllerIntegrationTest {
 
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
+
+    @Autowired
+    private JwtProperties jwtProperties;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -119,6 +129,23 @@ class NotificationControllerIntegrationTest {
                         .header("Authorization", bearer(user)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.unreadCount").value(0));
+    }
+
+    /**
+     * 验证过期 access token 访问未读通知数接口时也应返回 401。
+     * <p>
+     * 该用例用于固化当前 expired token 缺陷，防止通知角标接口绕过其他受保护接口
+     * 已暴露出来的 JWT 过期异常翻译缺口。
+     */
+    @Test
+    void shouldRejectExpiredAccessTokenWhenQueryingUnreadNotificationCount() throws Exception {
+        User user = createUser("notice-user-expired", "notice-expired@example.com");
+        String expiredAccessToken = createExpiredAccessToken(
+                jwtTokenProvider.createAccessToken(user.getId(), user.getUsername(), "USER"));
+
+        mockMvc.perform(get("/api/notifications/unread-count")
+                        .header("Authorization", "Bearer " + expiredAccessToken))
+                .andExpect(status().isUnauthorized());
     }
 
     /**
@@ -256,6 +283,29 @@ class NotificationControllerIntegrationTest {
         record.setUpdatedAt(createdAt);
         notificationRecordMapper.insert(record);
         return record;
+    }
+
+    /**
+     * 基于真实 access token 的载荷和测试环境 JWT 配置重签一个已过期令牌，
+     * 确保该测试命中的是真实“过期 access token”分支，而不是签名非法分支。
+     */
+    private String createExpiredAccessToken(String accessToken) {
+        Claims claims = Jwts.parser()
+                .verifyWith(Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8)))
+                .build()
+                .parseSignedClaims(accessToken)
+                .getPayload();
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .issuer(jwtProperties.issuer())
+                .subject(claims.getSubject())
+                .claim("username", claims.get("username", String.class))
+                .claim("role", claims.get("role", String.class))
+                .claim("tokenType", claims.get("tokenType", String.class))
+                .issuedAt(Date.from(now.minusSeconds(120)))
+                .expiration(Date.from(now.minusSeconds(60)))
+                .signWith(Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8)))
+                .compact();
     }
 
     private String bearer(User user) {

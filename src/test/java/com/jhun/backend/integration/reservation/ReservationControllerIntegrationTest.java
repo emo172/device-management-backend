@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jhun.backend.config.security.JwtProperties;
 import com.jhun.backend.config.security.JwtTokenProvider;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
@@ -22,9 +23,15 @@ import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.util.UuidUtil;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,6 +75,8 @@ class ReservationControllerIntegrationTest {
     private PasswordEncoder passwordEncoder;
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
+    @Autowired
+    private JwtProperties jwtProperties;
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
@@ -469,6 +478,25 @@ class ReservationControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.records[2].purpose").value("本人分页预约-4"))
                 .andExpect(jsonPath("$.data.records[3].purpose").value("本人分页预约-3"))
                 .andExpect(jsonPath("$.data.records[4].purpose").value("本人分页预约-2"));
+    }
+
+    /**
+     * 验证过期 access token 访问固定分页列表时也应返回 401。
+     * <p>
+     * 该用例用于固化当前 expired token 缺陷，防止列表接口绕过 `/api/auth/me`
+     * 已暴露出来的 JWT 过期异常翻译缺口。
+     */
+    @Test
+    void shouldRejectExpiredAccessTokenWhenListingReservationsWithFixedPaging() throws Exception {
+        User currentUser = createUser("rsv-expired-page5-u1", "reserve-expired-page5-user-1@example.com", "USER");
+        String expiredAccessToken = createExpiredAccessToken(
+                jwtTokenProvider.createAccessToken(currentUser.getId(), currentUser.getUsername(), "USER"));
+
+        mockMvc.perform(get("/api/reservations")
+                        .header("Authorization", "Bearer " + expiredAccessToken)
+                        .param("page", "1")
+                        .param("size", "5"))
+                .andExpect(status().isUnauthorized());
     }
 
     /**
@@ -971,6 +999,29 @@ class ReservationControllerIntegrationTest {
 
     private String bearer(User user, String role) {
         return "Bearer " + jwtTokenProvider.createAccessToken(user.getId(), user.getUsername(), role);
+    }
+
+    /**
+     * 基于真实 access token 的载荷和测试环境 JWT 配置重签一个已过期令牌，
+     * 确保列表接口命中的是真实“过期 access token”分支，而不是签名非法或 tokenType 错误分支。
+     */
+    private String createExpiredAccessToken(String accessToken) {
+        Claims claims = Jwts.parser()
+                .verifyWith(Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8)))
+                .build()
+                .parseSignedClaims(accessToken)
+                .getPayload();
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .issuer(jwtProperties.issuer())
+                .subject(claims.getSubject())
+                .claim("username", claims.get("username", String.class))
+                .claim("role", claims.get("role", String.class))
+                .claim("tokenType", claims.get("tokenType", String.class))
+                .issuedAt(Date.from(now.minusSeconds(120)))
+                .expiration(Date.from(now.minusSeconds(60)))
+                .signWith(Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8)))
+                .compact();
     }
 
     /**
