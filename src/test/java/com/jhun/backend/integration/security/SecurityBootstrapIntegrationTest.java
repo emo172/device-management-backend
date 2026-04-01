@@ -1,10 +1,12 @@
 package com.jhun.backend.integration.security;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jhun.backend.config.security.JwtTokenProvider;
@@ -95,7 +97,10 @@ class SecurityBootstrapIntegrationTest {
     @Test
     void shouldRejectAnonymousProtectedRequest() throws Exception {
         mockMvc.perform(get("/api/admin/users"))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(1))
+                .andExpect(jsonPath("$.message").value("未登录或登录已过期，请重新登录"))
+                .andExpect(jsonPath("$.data").value(nullValue()));
     }
 
     /**

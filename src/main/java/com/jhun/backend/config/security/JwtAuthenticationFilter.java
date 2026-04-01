@@ -2,6 +2,7 @@ package com.jhun.backend.config.security;
 
 import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,8 +10,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import org.springframework.http.HttpHeaders;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -25,10 +28,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider jwtTokenProvider;
     private final AuthRuntimeStateSupport authRuntimeStateSupport;
+    private final AuthenticationEntryPoint authenticationEntryPoint;
 
-    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider, AuthRuntimeStateSupport authRuntimeStateSupport) {
+    public JwtAuthenticationFilter(
+            JwtTokenProvider jwtTokenProvider,
+            AuthRuntimeStateSupport authRuntimeStateSupport,
+            AuthenticationEntryPoint authenticationEntryPoint) {
         this.jwtTokenProvider = jwtTokenProvider;
         this.authRuntimeStateSupport = authRuntimeStateSupport;
+        this.authenticationEntryPoint = authenticationEntryPoint;
     }
 
     @Override
@@ -38,7 +46,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (authorization != null && authorization.startsWith("Bearer ")
                 && SecurityContextHolder.getContext().getAuthentication() == null) {
             String token = authorization.substring(7);
-            Claims claims = jwtTokenProvider.parseClaims(token);
+            Claims claims;
+
+            /*
+             * 这里只把 JWT 自身的解析失败翻译成统一 401 JSON。
+             * 一旦令牌已经解析成功，后续的会话触达、鉴权上下文装配以及控制层/基础设施异常
+             * 都必须继续按原有 400/500 语义暴露，避免把真实故障误吞成“登录过期”。
+             */
+            try {
+                claims = jwtTokenProvider.parseClaims(token);
+            } catch (JwtException | IllegalArgumentException exception) {
+                authenticationEntryPoint.commence(
+                        request,
+                        response,
+                        new InsufficientAuthenticationException("JWT 无效或已过期", exception));
+                return;
+            }
 
             /*
              * 访问受保护接口时只能接受 access token。

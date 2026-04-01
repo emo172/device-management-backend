@@ -1,5 +1,6 @@
 package com.jhun.backend.integration.auth;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -9,8 +10,15 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jhun.backend.config.security.JwtProperties;
 import com.jhun.backend.service.support.auth.AuthRuntimeStateSupport;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Date;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +45,9 @@ class AuthControllerIntegrationTest {
 
     @Autowired
     private AuthRuntimeStateSupport authRuntimeStateSupport;
+
+    @Autowired
+    private JwtProperties jwtProperties;
 
     private MockMvc mockMvc;
 
@@ -169,7 +180,52 @@ class AuthControllerIntegrationTest {
 
         mockMvc.perform(get("/api/auth/me")
                         .header("Authorization", "Bearer " + refreshToken))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(1))
+                .andExpect(jsonPath("$.message").value("未登录或登录已过期，请重新登录"))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+    }
+
+    /**
+     * 验证 access token 过期后访问当前用户信息接口会返回 401，
+     * 为后续补齐 JWT 过滤器异常翻译缺口提供稳定的安全回归抓手。
+     */
+    @Test
+    void shouldRejectExpiredAccessTokenWhenAccessingCurrentUserProfile() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "username": "expired-access-user",
+                                  "password": "Password123!",
+                                  "email": "expired-access-user@example.com",
+                                  "realName": "过期访问令牌用户",
+                                  "phone": "13800138012"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "account": "expired-access-user",
+                                  "password": "Password123!"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode loginBody = objectMapper.readTree(loginResult.getResponse().getContentAsString());
+        String accessToken = loginBody.path("data").path("accessToken").asText();
+        String expiredAccessToken = createExpiredAccessToken(accessToken);
+
+        mockMvc.perform(get("/api/auth/me")
+                        .header("Authorization", "Bearer " + expiredAccessToken))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(1))
+                .andExpect(jsonPath("$.message").value("未登录或登录已过期，请重新登录"))
+                .andExpect(jsonPath("$.data").value(nullValue()));
     }
 
     /**
@@ -213,5 +269,28 @@ class AuthControllerIntegrationTest {
         authRuntimeStateSupport.cleanupTimedOutSessions(LocalDateTime.now().plusMinutes(29), 30);
 
         org.junit.jupiter.api.Assertions.assertTrue(authRuntimeStateSupport.hasSession(accessToken));
+    }
+
+    /**
+     * 基于真实 access token 的载荷和测试环境 JWT 配置重签一个已过期令牌，
+     * 确保该测试命中的是真实“过期 access token”分支，而不是签名非法或 tokenType 错误分支。
+     */
+    private String createExpiredAccessToken(String accessToken) {
+        Claims claims = Jwts.parser()
+                .verifyWith(Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8)))
+                .build()
+                .parseSignedClaims(accessToken)
+                .getPayload();
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .issuer(jwtProperties.issuer())
+                .subject(claims.getSubject())
+                .claim("username", claims.get("username", String.class))
+                .claim("role", claims.get("role", String.class))
+                .claim("tokenType", claims.get("tokenType", String.class))
+                .issuedAt(Date.from(now.minusSeconds(120)))
+                .expiration(Date.from(now.minusSeconds(60)))
+                .signWith(Keys.hmacShaKeyFor(jwtProperties.secret().getBytes(StandardCharsets.UTF_8)))
+                .compact();
     }
 }
