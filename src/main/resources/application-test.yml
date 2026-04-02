@@ -23,6 +23,18 @@ spring:
       schema-locations: classpath:testdb/task3-schema.sql
       data-locations: classpath:testdb/task3-data.sql
 
+ai:
+  # 测试 profile 默认仍保持关闭聊天入口并走 mock provider，避免非 AI 用例被 qwen 条件装配意外牵连。
+  enabled: false
+  provider: mock
+  qwen:
+    # 这里显式放入假的 base URL / API Key，只为满足 qwen 条件装配与 fail-fast 校验；
+    # 真正的 qwen 集成测试会用 Spring MockitoBean 替换 QwenOpenAiClient，禁止触达真实 DashScope。
+    base-url: https://dashscope.test.invalid/compatible-mode/v1
+    model: qwen-plus
+    api-key: test-dashscope-key
+    max-tool-calls: 1
+
 mybatis-plus:
   configuration:
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
