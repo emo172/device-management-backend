@@ -3,6 +3,7 @@ package com.jhun.backend.service.impl;
 import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.dto.notification.MarkAllReadResponse;
 import com.jhun.backend.dto.notification.MarkReadResponse;
+import com.jhun.backend.dto.notification.NotificationPageResponse;
 import com.jhun.backend.dto.notification.NotificationResponse;
 import com.jhun.backend.dto.notification.UnreadCountResponse;
 import com.jhun.backend.entity.NotificationRecord;
@@ -28,10 +29,23 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    public List<NotificationResponse> listNotifications(String userId) {
-        return notificationRecordMapper.findByUserId(userId).stream()
+    /**
+     * 分页查询通知列表。
+     * <p>
+     * 这里与 borrow/overdue 分页保持同一归一化规则：page/size 小于 1 时回落到 1，
+     * 并把 notificationType 精确过滤下沉到 SQL，避免先全量查出后再在内存中切片或过滤。
+     */
+    public NotificationPageResponse listNotifications(String userId, int page, int size, String notificationType) {
+        int safePage = Math.max(page, 1);
+        int safeSize = Math.max(size, 1);
+        int offset = (safePage - 1) * safeSize;
+        long total = notificationRecordMapper.countByConditions(notificationType, userId);
+        List<NotificationResponse> records = notificationRecordMapper
+                .findPageByConditions(notificationType, userId, safeSize, offset)
+                .stream()
                 .map(this::toResponse)
                 .toList();
+        return new NotificationPageResponse(total, records);
     }
 
     @Override
