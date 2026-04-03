@@ -74,12 +74,29 @@ class NotificationControllerIntegrationTest {
     }
 
     /**
-     * 验证通知列表会回传通知页渲染和问题追踪所需的关键字段，避免前端继续依赖隐式数据库字段。
+     * 验证通知列表会回传固定分页契约和通知页渲染所需字段，避免前端继续依赖旧数组响应。
      */
     @Test
-    void shouldReturnNotificationListWithContractFields() throws Exception {
+    void shouldReturnNotificationPageWithContractFields() throws Exception {
         User user = createUser("notice-user-list", "notice-list@example.com");
-        NotificationRecord notification = insertNotification(user.getId(), "IN_APP", 0);
+        LocalDateTime baseTime = LocalDateTime.of(2026, 3, 20, 9, 0);
+        for (int i = 0; i < 10; i++) {
+            insertNotification(
+                    user.getId(),
+                    "VERIFY_CODE",
+                    "IN_APP",
+                    0,
+                    UuidUtil.randomUuid(),
+                    baseTime.plusMinutes(i));
+        }
+
+        NotificationRecord notification = insertNotification(
+                user.getId(),
+                "VERIFY_CODE",
+                "IN_APP",
+                0,
+                UuidUtil.randomUuid(),
+                LocalDateTime.of(2026, 3, 20, 12, 0));
         notification.setStatus("FAILED");
         notification.setRetryCount(3);
         notification.setTemplateVars("{\"reservationId\":\"r-001\"}");
@@ -90,16 +107,124 @@ class NotificationControllerIntegrationTest {
         notificationRecordMapper.updateById(notification);
 
         mockMvc.perform(get("/api/notifications")
-                        .header("Authorization", bearer(user)))
+                        .header("Authorization", bearer(user))
+                        .param("page", "1")
+                        .param("size", "10"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("FAILED"))
-                .andExpect(jsonPath("$.data[0].readAt").value("2026-03-20T08:30:00"))
-                .andExpect(jsonPath("$.data[0].templateVars").value("{\"reservationId\":\"r-001\"}"))
-                .andExpect(jsonPath("$.data[0].retryCount").value(3))
-                .andExpect(jsonPath("$.data[0].relatedId").value("reservation-001"))
-                .andExpect(jsonPath("$.data[0].relatedType").value("RESERVATION"))
-                .andExpect(jsonPath("$.data[0].sentAt").value("2026-03-20T08:00:00"))
-                .andExpect(jsonPath("$.data[0].createdAt").exists());
+                .andExpect(jsonPath("$.data.total").value(11))
+                .andExpect(jsonPath("$.data.records.length()").value(10))
+                .andExpect(jsonPath("$.data.records[0].status").value("FAILED"))
+                .andExpect(jsonPath("$.data.records[0].readAt").value("2026-03-20T08:30:00"))
+                .andExpect(jsonPath("$.data.records[0].templateVars").value("{\"reservationId\":\"r-001\"}"))
+                .andExpect(jsonPath("$.data.records[0].retryCount").value(3))
+                .andExpect(jsonPath("$.data.records[0].relatedId").value("reservation-001"))
+                .andExpect(jsonPath("$.data.records[0].relatedType").value("RESERVATION"))
+                .andExpect(jsonPath("$.data.records[0].sentAt").value("2026-03-20T08:00:00"))
+                .andExpect(jsonPath("$.data.records[0].createdAt").exists());
+    }
+
+    /**
+     * 验证通知类型筛选在 SQL 侧做精确过滤，且未知类型返回空分页而不是 400。
+     */
+    @Test
+    void shouldFilterNotificationsByExactTypeAndReturnEmptyForUnknownType() throws Exception {
+        User user = createUser("notice-user-filter", "notice-filter@example.com");
+        insertNotification(
+                user.getId(),
+                "VERIFY_CODE",
+                "IN_APP",
+                0,
+                UuidUtil.randomUuid(),
+                LocalDateTime.of(2026, 3, 21, 9, 0));
+        insertNotification(
+                user.getId(),
+                "OVERDUE_WARNING",
+                "IN_APP",
+                0,
+                UuidUtil.randomUuid(),
+                LocalDateTime.of(2026, 3, 21, 10, 0));
+
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user))
+                        .param("page", "1")
+                        .param("size", "10")
+                        .param("notificationType", "OVERDUE_WARNING"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records.length()").value(1))
+                .andExpect(jsonPath("$.data.records[0].notificationType").value("OVERDUE_WARNING"));
+
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user))
+                        .param("page", "1")
+                        .param("size", "10")
+                        .param("notificationType", "UNKNOWN_TYPE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0))
+                .andExpect(jsonPath("$.data.records.length()").value(0));
+    }
+
+    /**
+     * 验证 page/size 小于 1 时会被归一化到 1，避免负页码或 0 页大小打穿列表契约。
+     */
+    @Test
+    void shouldNormalizeInvalidPageAndSizeWhenListingNotifications() throws Exception {
+        User user = createUser("notice-page-norm", "notice-normalize@example.com");
+        NotificationRecord older = insertNotification(
+                user.getId(),
+                "VERIFY_CODE",
+                "IN_APP",
+                0,
+                UuidUtil.randomUuid(),
+                LocalDateTime.of(2026, 3, 22, 9, 0));
+        NotificationRecord newer = insertNotification(
+                user.getId(),
+                "VERIFY_CODE",
+                "IN_APP",
+                0,
+                UuidUtil.randomUuid(),
+                LocalDateTime.of(2026, 3, 22, 10, 0));
+
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user))
+                        .param("page", "0")
+                        .param("size", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.records.length()").value(1))
+                .andExpect(jsonPath("$.data.records[0].id").value(newer.getId()));
+    }
+
+    /**
+     * 验证通知列表在 created_at 相同的情况下继续按 id 倒序排序，避免翻页时出现不稳定顺序。
+     */
+    @Test
+    void shouldSortNotificationsByCreatedAtDescThenIdDesc() throws Exception {
+        User user = createUser("notice-user-sort", "notice-sort@example.com");
+        LocalDateTime tieTime = LocalDateTime.of(2026, 3, 23, 9, 0);
+        long base = Math.floorMod(System.nanoTime(), 999_999_999_998L);
+        String lowerId = "00000000-0000-0000-0000-" + String.format("%012d", base);
+        String higherId = "00000000-0000-0000-0000-" + String.format("%012d", base + 1);
+
+        NotificationRecord older = insertNotification(
+                user.getId(),
+                "VERIFY_CODE",
+                "IN_APP",
+                0,
+                UuidUtil.randomUuid(),
+                tieTime.minusMinutes(1));
+        insertNotification(user.getId(), "VERIFY_CODE", "IN_APP", 0, lowerId, tieTime);
+        insertNotification(user.getId(), "VERIFY_CODE", "IN_APP", 0, higherId, tieTime);
+
+        mockMvc.perform(get("/api/notifications")
+                        .header("Authorization", bearer(user))
+                        .param("page", "1")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.records[0].id").value(higherId))
+                .andExpect(jsonPath("$.data.records[1].id").value(lowerId))
+                .andExpect(jsonPath("$.data.records[2].id").value(older.getId()));
     }
 
     /**
@@ -192,10 +317,12 @@ class NotificationControllerIntegrationTest {
          * 否则前端 Header 角标和通知中心会出现“按钮显示已读、列表仍是未读”的双真相源问题。
          */
         mockMvc.perform(get("/api/notifications")
-                        .header("Authorization", bearer(user)))
+                        .header("Authorization", bearer(user))
+                        .param("page", "1")
+                        .param("size", "10"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].readFlag").value(1))
-                .andExpect(jsonPath("$.data[0].readAt").isNotEmpty());
+                .andExpect(jsonPath("$.data.records[0].readFlag").value(1))
+                .andExpect(jsonPath("$.data.records[0].readAt").isNotEmpty());
     }
 
     /**
@@ -235,16 +362,19 @@ class NotificationControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.unreadCount").value(0));
 
         mockMvc.perform(get("/api/notifications")
-                        .header("Authorization", bearer(user)))
+                        .header("Authorization", bearer(user))
+                        .param("page", "1")
+                        .param("size", "10"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].channel").value("EMAIL"))
-                .andExpect(jsonPath("$.data[0].readFlag").value(0))
-                .andExpect(jsonPath("$.data[1].channel").value("IN_APP"))
-                .andExpect(jsonPath("$.data[1].readFlag").value(1))
-                .andExpect(jsonPath("$.data[1].readAt").isNotEmpty())
-                .andExpect(jsonPath("$.data[2].channel").value("IN_APP"))
-                .andExpect(jsonPath("$.data[2].readFlag").value(1))
-                .andExpect(jsonPath("$.data[2].readAt").isNotEmpty());
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.records[0].channel").value("EMAIL"))
+                .andExpect(jsonPath("$.data.records[0].readFlag").value(0))
+                .andExpect(jsonPath("$.data.records[1].channel").value("IN_APP"))
+                .andExpect(jsonPath("$.data.records[1].readFlag").value(1))
+                .andExpect(jsonPath("$.data.records[1].readAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.records[2].channel").value("IN_APP"))
+                .andExpect(jsonPath("$.data.records[2].readFlag").value(1))
+                .andExpect(jsonPath("$.data.records[2].readAt").isNotEmpty());
     }
 
     private User createUser(String username, String email) {
@@ -264,11 +394,27 @@ class NotificationControllerIntegrationTest {
     }
 
     private NotificationRecord insertNotification(String userId, String channel, Integer readFlag) {
-        NotificationRecord record = new NotificationRecord();
         LocalDateTime createdAt = LocalDateTime.of(2026, 3, 20, 9, 0).plusMinutes(notificationRecordMapper.selectCount(null));
-        record.setId(UuidUtil.randomUuid());
+        return insertNotification(userId, "VERIFY_CODE", channel, readFlag, UuidUtil.randomUuid(), createdAt);
+    }
+
+    /**
+     * 按测试显式指定的类型、主键和创建时间建数。
+     * <p>
+     * 分页与稳定排序测试必须可控地制造“同一 created_at、不同 id”的数据，
+     * 因此这里保留一个精确建数入口，避免默认递增时间掩盖 SQL tie-breaker 问题。
+     */
+    private NotificationRecord insertNotification(
+            String userId,
+            String notificationType,
+            String channel,
+            Integer readFlag,
+            String notificationId,
+            LocalDateTime createdAt) {
+        NotificationRecord record = new NotificationRecord();
+        record.setId(notificationId);
         record.setUserId(userId);
-        record.setNotificationType("VERIFY_CODE");
+        record.setNotificationType(notificationType);
         record.setChannel(channel);
         record.setTitle("测试通知");
         record.setContent("测试内容");
