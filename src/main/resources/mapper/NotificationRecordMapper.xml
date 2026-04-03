@@ -3,10 +3,11 @@
 <mapper namespace="com.jhun.backend.mapper.NotificationRecordMapper">
 
     <!--
-        查询用户通知列表。
-        当前阶段按创建时间倒序返回通知页列表，并保留多渠道记录，后续可在服务层追加分页筛选。
+        查询用户通知分页列表。
+        notificationType 为空时返回当前用户全部通知；notificationType 非空时按通知类型精确过滤，
+        这样即使前端传入未知值，也会自然得到 total=0 的空分页，而不是把筛选语义散落到服务层。
     -->
-    <select id="findByUserId" resultType="com.jhun.backend.entity.NotificationRecord">
+    <select id="findPageByConditions" resultType="com.jhun.backend.entity.NotificationRecord">
         SELECT id,
                user_id,
                notification_type,
@@ -26,7 +27,21 @@
                updated_at
         FROM notification_record
         WHERE user_id = #{userId}
-        ORDER BY created_at DESC
+          <if test="notificationType != null and notificationType != ''">
+              AND notification_type = #{notificationType}
+          </if>
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 统计通知总数，避免通知列表先全量查询后再在内存中分页。 -->
+    <select id="countByConditions" resultType="long">
+        SELECT COUNT(1)
+        FROM notification_record
+        WHERE user_id = #{userId}
+          <if test="notificationType != null and notificationType != ''">
+              AND notification_type = #{notificationType}
+          </if>
     </select>
 
     <!--
