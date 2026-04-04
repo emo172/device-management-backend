@@ -22,6 +22,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class NotificationServiceImpl implements NotificationService {
 
+    private static final int DEFAULT_PAGE_VALUE = 1;
+    private static final int MAX_PAGE_SIZE = 100;
+
     private final NotificationRecordMapper notificationRecordMapper;
 
     public NotificationServiceImpl(NotificationRecordMapper notificationRecordMapper) {
@@ -29,16 +32,23 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
+    public List<NotificationResponse> listNotifications(String userId) {
+        return notificationRecordMapper.findByUserId(userId).stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
     /**
      * 分页查询通知列表。
      * <p>
-     * 这里与 borrow/overdue 分页保持同一归一化规则：page/size 小于 1 时回落到 1，
-     * 并把 notificationType 精确过滤下沉到 SQL，避免先全量查出后再在内存中切片或过滤。
+     * page/size 仍沿用现有分页接口的归一化习惯，但这里额外把 size 收口到固定上限，
+     * 并改用 long 计算 offset，避免超大页码与页长组合在进入 SQL 前先发生 int 溢出。
      */
-    public NotificationPageResponse listNotifications(String userId, int page, int size, String notificationType) {
-        int safePage = Math.max(page, 1);
-        int safeSize = Math.max(size, 1);
-        int offset = (safePage - 1) * safeSize;
+    @Override
+    public NotificationPageResponse listNotificationPage(String userId, int page, int size, String notificationType) {
+        int safePage = Math.max(page, DEFAULT_PAGE_VALUE);
+        int safeSize = Math.min(Math.max(size, DEFAULT_PAGE_VALUE), MAX_PAGE_SIZE);
+        long offset = (long) (safePage - 1) * safeSize;
         long total = notificationRecordMapper.countByConditions(notificationType, userId);
         List<NotificationResponse> records = notificationRecordMapper
                 .findPageByConditions(notificationType, userId, safeSize, offset)
