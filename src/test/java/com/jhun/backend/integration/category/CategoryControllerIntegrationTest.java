@@ -96,11 +96,22 @@ class CategoryControllerIntegrationTest {
                                 """.formatted(childCategoryName, rootCategoryName)))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(get("/api/device-categories/tree")
+        /*
+         * 分类树接口返回的是整张根分类集合，根节点顺序由 sort_order / created_at 决定，
+         * 不能把“我刚创建的根分类刚好在第一个位置”当成接口契约。
+         * 因此这里按名称定位目标根节点，避免跨测试残留分类把断言误伤成顺序问题。
+         */
+        JsonNode tree = objectMapper.readTree(mockMvc.perform(get("/api/device-categories/tree")
                         .header("Authorization", token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].name").value(rootCategoryName))
-                .andExpect(jsonPath("$.data[0].children[0].name").value(childCategoryName));
+                .andReturn()
+                .getResponse()
+                .getContentAsString())
+                .path("data");
+
+        JsonNode targetRoot = findCategoryNodeByName(tree, rootCategoryName);
+        org.junit.jupiter.api.Assertions.assertNotNull(targetRoot);
+        org.junit.jupiter.api.Assertions.assertEquals(childCategoryName, targetRoot.path("children").get(0).path("name").asText());
     }
 
     /**
