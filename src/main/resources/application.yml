@@ -67,9 +67,21 @@ storage:
   public-base-url: /files
 
 ai:
+  # 该开关只控制新的 `/api/ai/chat` 请求是否允许进入服务层，历史查询与 Prompt 管理接口不受影响。
   enabled: false
+  # 当前仅允许 `mock` 与 `qwen` 两种正式值，由运行时配置统一归一化 Provider 选择语义。
   provider: mock
+  # 后续 AI Provider 统一沿用该超时基线，避免不同实现各自散落定义请求超时。
   timeout-seconds: 30
+  qwen:
+    # 统一使用北京地域 DashScope OpenAI 兼容模式地址；如需环境切换，请通过外部配置覆盖而不是改 Java 常量。
+    base-url: ${AI_QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    # 默认模型骨架指向 qwen-plus，后续环境可按部署要求覆盖。
+    model: ${AI_QWEN_MODEL:qwen-plus}
+    # API Key 只能通过环境变量或外部配置注入，仓库内不落真实密钥。
+    api-key: ${DASHSCOPE_API_KEY:}
+    # 首发范围内最多允许 1 次工具调用；当前任务先只完成配置接线，不提前实现工具执行链路。
+    max-tool-calls: ${AI_QWEN_MAX_TOOL_CALLS:1}
 
 app:
   cors:
