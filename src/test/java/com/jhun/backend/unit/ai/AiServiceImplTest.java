@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -31,7 +32,9 @@ import org.mockito.ArgumentCaptor;
  * 本测试专门锁定 task 7 的服务层职责：
  * 1) `SUCCESS/PENDING/FAILED` 必须按 provider 统一结果稳定落到 `chat_history.execute_result`；
  * 2) `device_id/reservation_id/llm_model/extracted_info` 只能写入 provider 已经唯一解析出的值；
- * 3) `ai.enabled` 聊天守卫仍只作用于 chat 入口，不误触发 provider 或历史落库。
+ * 3) 历史初始化必须先于 provider 执行，避免真实副作用先发生后再因为留痕失败报错；
+ * 4) 最终历史回填失败只能降级记录，不能制造一次“业务已成功但接口失败”的假失败；
+ * 5) `ai.enabled` 聊天守卫仍只作用于 chat 入口，不误触发 provider 或历史落库。
  */
 class AiServiceImplTest {
 
@@ -75,7 +78,8 @@ class AiServiceImplTest {
         AiChatResponse response = aiService.chat(USER_ID, USER_ROLE, new AiChatRequest("session-1", "帮我查一下预约 RES-1"));
 
         ArgumentCaptor<ChatHistory> historyCaptor = ArgumentCaptor.forClass(ChatHistory.class);
-        verify(chatHistoryMapper).insert(historyCaptor.capture());
+        verify(chatHistoryMapper).insert(any(ChatHistory.class));
+        verify(chatHistoryMapper).updateById(historyCaptor.capture());
         ChatHistory history = historyCaptor.getValue();
         assertThat(response.sessionId()).isEqualTo("session-1");
         assertThat(response.intent()).isEqualTo("QUERY");
@@ -113,7 +117,8 @@ class AiServiceImplTest {
         aiService.chat(USER_ID, USER_ROLE, new AiChatRequest("session-2", "帮我预约投影仪"));
 
         ArgumentCaptor<ChatHistory> historyCaptor = ArgumentCaptor.forClass(ChatHistory.class);
-        verify(chatHistoryMapper).insert(historyCaptor.capture());
+        verify(chatHistoryMapper).insert(any(ChatHistory.class));
+        verify(chatHistoryMapper).updateById(historyCaptor.capture());
         ChatHistory history = historyCaptor.getValue();
         assertThat(history.getExecuteResult()).isEqualTo("PENDING");
         assertThat(history.getDeviceId()).isEqualTo("dev-2");
@@ -141,7 +146,8 @@ class AiServiceImplTest {
         AiChatResponse response = aiService.chat(USER_ID, USER_ROLE, new AiChatRequest(null, "帮我取消今天的预约"));
 
         ArgumentCaptor<ChatHistory> historyCaptor = ArgumentCaptor.forClass(ChatHistory.class);
-        verify(chatHistoryMapper).insert(historyCaptor.capture());
+        verify(chatHistoryMapper).insert(any(ChatHistory.class));
+        verify(chatHistoryMapper).updateById(historyCaptor.capture());
         ChatHistory history = historyCaptor.getValue();
         assertThat(response.executeResult()).isEqualTo("FAILED");
         assertThat(history.getExecuteResult()).isEqualTo("FAILED");
@@ -149,6 +155,51 @@ class AiServiceImplTest {
         assertThat(history.getDeviceId()).isNull();
         assertThat(history.getReservationId()).isNull();
         assertThat(history.getSessionId()).isNotBlank();
+    }
+
+    /**
+     * 验证初始历史骨架如果无法落库，会在 provider 执行前就直接失败，避免真实业务副作用先发生后才发现无法留痕。
+     */
+    @Test
+    void shouldStopBeforeProviderWhenPendingHistoryInsertFails() {
+        doThrow(new RuntimeException("chat history insert failed"))
+                .when(chatHistoryMapper)
+                .insert(any(ChatHistory.class));
+
+        assertThatThrownBy(() -> aiService.chat(USER_ID, USER_ROLE, new AiChatRequest("session-3", "帮我取消预约")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("AI 对话历史初始化失败，已阻止后续工具执行");
+
+        verify(aiProvider, never()).process(any(), any(), any());
+        verify(chatHistoryMapper, never()).updateById(any(ChatHistory.class));
+    }
+
+    /**
+     * 验证当 provider 已经产出最终结果时，历史回填失败只会降级记录而不会把接口结果打成失败。
+     */
+    @Test
+    void shouldReturnProviderResultWhenFinalHistoryUpdateFails() {
+        when(aiProvider.process(eq(USER_ID), eq(USER_ROLE), eq("帮我查一下我的预约")))
+                .thenReturn(new AiProviderResult(
+                        "QUERY",
+                        BigDecimal.valueOf(0.95),
+                        "{\"intent\":\"QUERY\"}",
+                        "SUCCESS",
+                        "已查询到你的预约。",
+                        null,
+                        "qwen-plus",
+                        null,
+                        null));
+        doThrow(new RuntimeException("chat history update failed"))
+                .when(chatHistoryMapper)
+                .updateById(any(ChatHistory.class));
+
+        AiChatResponse response = aiService.chat(USER_ID, USER_ROLE, new AiChatRequest("session-4", "帮我查一下我的预约"));
+
+        verify(chatHistoryMapper).insert(any(ChatHistory.class));
+        verify(chatHistoryMapper).updateById(any(ChatHistory.class));
+        assertThat(response.executeResult()).isEqualTo("SUCCESS");
+        assertThat(response.aiResponse()).isEqualTo("已查询到你的预约。");
     }
 
     /**
