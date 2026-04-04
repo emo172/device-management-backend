@@ -13,6 +13,9 @@ import org.apache.ibatis.annotations.Param;
 @Mapper
 public interface NotificationRecordMapper extends BaseMapper<NotificationRecord> {
 
+    /** 查询用户通知列表。 */
+    List<NotificationRecord> findByUserId(@Param("userId") String userId);
+
     /**
      * 分页查询用户通知列表。
      *
@@ -26,7 +29,7 @@ public interface NotificationRecordMapper extends BaseMapper<NotificationRecord>
             @Param("notificationType") String notificationType,
             @Param("userId") String userId,
             @Param("limit") int limit,
-            @Param("offset") int offset);
+            @Param("offset") long offset);
 
     /**
      * 统计用户通知总数。

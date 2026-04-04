@@ -3,6 +3,33 @@
 <mapper namespace="com.jhun.backend.mapper.NotificationRecordMapper">
 
     <!--
+        查询用户通知列表。
+        该接口保持当前通知中心依赖的数组契约，同时沿用 created_at + id 倒序，避免旧接口和分页接口排序结果不一致。
+    -->
+    <select id="findByUserId" resultType="com.jhun.backend.entity.NotificationRecord">
+        SELECT id,
+               user_id,
+               notification_type,
+               channel,
+               title,
+               content,
+               template_vars,
+               status,
+               retry_count,
+               error_message,
+               sent_at,
+               read_flag,
+               read_at,
+               related_id,
+               related_type,
+               created_at,
+               updated_at
+        FROM notification_record
+        WHERE user_id = #{userId}
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <!--
         查询用户通知分页列表。
         notificationType 为空时返回当前用户全部通知；notificationType 非空时按通知类型精确过滤，
         这样即使前端传入未知值，也会自然得到 total=0 的空分页，而不是把筛选语义散落到服务层。
