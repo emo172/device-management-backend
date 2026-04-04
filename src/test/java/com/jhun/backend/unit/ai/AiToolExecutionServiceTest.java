@@ -39,7 +39,8 @@ import org.mockito.ArgumentCaptor;
  * 该测试锁定 task 5 的核心边界：
  * 1) 只开放四个正式工具；
  * 2) 工具层只能通过 DeviceService / ReservationService 执行；
- * 3) 未知工具、缺参、歧义、跨用户和业务拒绝都必须返回可预测结果，而不是异常泄漏。
+ * 3) destructive 工具不能把模型解析出的主键直接当成正式写操作入参；
+ * 4) 未知工具、缺参、歧义、跨用户和业务拒绝都必须返回可预测结果，而不是异常泄漏。
  */
 class AiToolExecutionServiceTest {
 
@@ -302,6 +303,51 @@ class AiToolExecutionServiceTest {
         assertThat(result.success()).isFalse();
         assertThat(result.errorCode()).isEqualTo("INVALID_ARGUMENT");
         assertThat(result.payload()).containsEntry("missingFields", List.of("reservationId"));
+    }
+
+    /**
+     * 验证 destructive 取消工具不会因为模型猜到了 resolvedReservationId，就直接下放到正式取消服务。
+     * <p>
+     * 取消预约会改写真实业务状态，因此工具层只能接受正式工具参数里的 reservationId，
+     * 不能把结构化提取阶段的推测结果当成权威主键。
+     */
+    @Test
+    void shouldRejectResolvedReservationIdWithoutExplicitReservationIdForCancelTool() {
+        AiToolExecutionResult result = aiToolExecutionService.execute(
+                USER_ID,
+                "USER",
+                extraction(AiToolRegistry.CANCEL_MY_RESERVATION, Map.of("reason", "临时改期"), null, "res-1"));
+
+        verifyNoInteractions(deviceService, reservationService);
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("INVALID_ARGUMENT");
+        assertThat(result.payload()).containsEntry("missingFields", List.of("reservationId"));
+    }
+
+    /**
+     * 验证创建预约不会因为模型给出了 resolvedDeviceId，就绕过工具层自己的唯一解析流程。
+     * <p>
+     * 创建预约虽然不像取消那样直接破坏已有状态，但仍会落到正式预约写链路，
+     * 因此设备主键必须来自显式工具参数或服务侧唯一匹配结果，不能直接信模型推测值。
+     */
+    @Test
+    void shouldRejectResolvedDeviceIdWithoutFormalDeviceLocatorForCreateTool() {
+        AiToolExecutionResult result = aiToolExecutionService.execute(
+                USER_ID,
+                "USER",
+                extraction(
+                        AiToolRegistry.CREATE_MY_RESERVATION,
+                        Map.of(
+                                "startTime", "2026-04-10T09:00:00",
+                                "endTime", "2026-04-10T10:00:00",
+                                "purpose", "课程演示"),
+                        "dev-1",
+                        null));
+
+        verifyNoInteractions(deviceService, reservationService);
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("INVALID_ARGUMENT");
+        assertThat(result.payload()).containsEntry("missingFields", List.of("deviceId/deviceNumber/deviceName"));
     }
 
     /**

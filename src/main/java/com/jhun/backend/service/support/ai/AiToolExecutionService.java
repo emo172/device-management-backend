@@ -78,7 +78,9 @@ public class AiToolExecutionService {
      * 执行一条结构化提取后的 AI 工具请求。
      * <p>
      * 这里直接消费 task 4 产出的结构化真相源，避免再复制一套平行字段模型；
-     * 同时保留 `resolvedDeviceId` / `resolvedReservationId`，让上游已经唯一解析出的资源 ID 可以直接复用。
+     * 同时保留 `resolvedDeviceId` / `resolvedReservationId`，让上游已经唯一解析出的资源 ID 可以在只读查询和历史留痕里复用；
+     * 但对创建、取消这类会触发真实写操作的工具，执行层仍必须坚持“正式工具参数或服务侧唯一解析结果才算权威主键”，
+     * 不能把模型推测出的资源 ID 直接当成写链路入参。
      */
     public AiToolExecutionResult execute(String userId, String role, QwenExtractionSchema.StructuredExtraction extraction) {
         if (extraction == null) {
@@ -116,9 +118,9 @@ public class AiToolExecutionService {
                 case AiToolRegistry.QUERY_MY_RESERVATIONS ->
                         executeQueryMyReservations(userId, normalizedToolName, normalizedArguments, resolvedReservationId);
                 case AiToolRegistry.CREATE_MY_RESERVATION ->
-                        executeCreateMyReservation(userId, normalizedToolName, normalizedArguments, resolvedDeviceId);
+                        executeCreateMyReservation(userId, normalizedToolName, normalizedArguments);
                 case AiToolRegistry.CANCEL_MY_RESERVATION ->
-                        executeCancelMyReservation(userId, normalizedToolName, normalizedArguments, resolvedReservationId);
+                        executeCancelMyReservation(userId, normalizedToolName, normalizedArguments);
                 default -> throw controlledFailure(
                         normalizedToolName,
                         "UNKNOWN_TOOL",
@@ -227,9 +229,8 @@ public class AiToolExecutionService {
     private AiToolExecutionResult executeCreateMyReservation(
             String userId,
             String toolName,
-            Map<String, Object> toolArguments,
-            String resolvedDeviceId) {
-        String deviceId = resolveDeviceId(toolName, toolArguments, resolvedDeviceId);
+            Map<String, Object> toolArguments) {
+        String deviceId = resolveDeviceId(toolName, toolArguments);
         LocalDateTime startTime = readRequiredDateTime(toolArguments, "startTime", toolName);
         LocalDateTime endTime = readRequiredDateTime(toolArguments, "endTime", toolName);
         String purpose = readRequiredText(toolArguments, "purpose", toolName);
@@ -245,14 +246,13 @@ public class AiToolExecutionService {
     private AiToolExecutionResult executeCancelMyReservation(
             String userId,
             String toolName,
-            Map<String, Object> toolArguments,
-            String resolvedReservationId) {
-        String reservationId = firstNonBlank(resolvedReservationId, readOptionalText(toolArguments, "reservationId", toolName));
+            Map<String, Object> toolArguments) {
+        String reservationId = readOptionalText(toolArguments, "reservationId", toolName);
         if (reservationId == null) {
             throw controlledFailure(
                     toolName,
                     "INVALID_ARGUMENT",
-                    "取消预约时必须提供 reservationId 或 resolvedReservationId",
+                    "取消预约时必须提供 reservationId",
                     Map.of("missingFields", List.of("reservationId")));
         }
         String reason = readOptionalText(toolArguments, "reason", toolName);
@@ -270,8 +270,8 @@ public class AiToolExecutionService {
      * 原因不是要复制设备业务，而是当前正式服务边界没有暴露“按名称查单条设备”能力；
      * 因此这里只能走列表接口拿候选，再在工具层把“唯一命中 / 歧义 / 未命中”三种结果显式化，避免 provider 直接猜测设备 ID。
      */
-    private String resolveDeviceId(String toolName, Map<String, Object> toolArguments, String resolvedDeviceId) {
-        String deviceId = firstNonBlank(resolvedDeviceId, readOptionalText(toolArguments, "deviceId", toolName));
+    private String resolveDeviceId(String toolName, Map<String, Object> toolArguments) {
+        String deviceId = readOptionalText(toolArguments, "deviceId", toolName);
         if (deviceId != null) {
             return deviceId;
         }
