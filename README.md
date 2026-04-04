@@ -89,7 +89,7 @@ cd <当前后端仓库目录>
 - 预约与批量预约：`/api/reservations/*`、`/api/reservation-batches/*`
 - 借还管理：`/api/borrow-records/*`
 - 逾期管理：`/api/overdue-records/*`
-- 通知管理：`/api/notifications/*`
+- 通知管理：`/api/notifications`（兼容当前通知数组列表）、`/api/notifications/page`（分页筛选扩展）及其余 `/api/notifications/*`
 - AI 对话与 Prompt：`/api/ai/*`、`/api/ai/prompts*`
 - 统计分析：`/api/statistics/*`
 

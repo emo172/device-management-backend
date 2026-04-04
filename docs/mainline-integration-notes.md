@@ -164,5 +164,6 @@ npm run type-check && npm run build && npm run test:unit
 ## 已知边界
 
 - 本轮不处理 AI、统计、Prompt 模板和批量预约结果页
+- 通知列表兼容接口保持 `GET /api/notifications` 数组返回；服务端分页与通知类型筛选通过 `GET /api/notifications/page` 承接
 - 通知中心当前采用轮询刷新，不提供 WebSocket / SSE 实时推送
 - 若本地环境未准备 MySQL / Redis，或无法确认 smoke 账号明文密码，则只能先完成自动化验证，人工冒烟需要待环境补齐后再执行
