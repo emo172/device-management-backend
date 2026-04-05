@@ -14,7 +14,13 @@ public final class SpeechContract {
 
     public static final String LOCALE_ZH_CN = "zh-CN";
 
-    public static final List<String> SUPPORTED_INPUT_CONTENT_TYPES = List.of("audio/webm", "audio/webm;codecs=opus");
+    /**
+     * 浏览器录音正式契约固定为 Ogg/Opus。
+     * <p>
+     * Azure Speech Java SDK 对 `OGG_OPUS` 有明确容器常量与文档支持；
+     * 浏览器侧应先通过 `MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")` 探测，再按该口径上传。
+     */
+    public static final List<String> SUPPORTED_INPUT_CONTENT_TYPES = List.of("audio/ogg", "audio/ogg;codecs=opus");
 
     public static final long MAX_UPLOAD_SIZE_BYTES = 10L * 1024 * 1024;
 
@@ -26,7 +32,7 @@ public final class SpeechContract {
 
     public static final String EMPTY_AUDIO_MESSAGE = "请上传语音文件";
 
-    public static final String UNSUPPORTED_CONTENT_TYPE_MESSAGE = "仅支持 audio/webm 录音文件";
+    public static final String UNSUPPORTED_CONTENT_TYPE_MESSAGE = "仅支持 audio/ogg（Opus）录音文件";
 
     public static final String FILE_TOO_LARGE_MESSAGE = "语音文件大小不能超过 10MB";
 

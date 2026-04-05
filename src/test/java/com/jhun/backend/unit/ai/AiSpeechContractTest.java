@@ -31,7 +31,7 @@ class AiSpeechContractTest {
     void shouldExposeFixedSpeechContractConstants() {
         assertEquals(SpeechContract.PROVIDER_AZURE, "azure");
         assertEquals("zh-CN", SpeechContract.LOCALE_ZH_CN);
-        assertIterableEquals(List.of("audio/webm", "audio/webm;codecs=opus"), SpeechContract.SUPPORTED_INPUT_CONTENT_TYPES);
+        assertIterableEquals(List.of("audio/ogg", "audio/ogg;codecs=opus"), SpeechContract.SUPPORTED_INPUT_CONTENT_TYPES);
         assertEquals("audio/mpeg", SpeechContract.TTS_OUTPUT_CONTENT_TYPE);
         assertEquals("zh-CN-XiaoxiaoNeural", SpeechContract.TTS_VOICE_NAME);
         assertEquals("语音功能未开启", SpeechContract.FEATURE_DISABLED_MESSAGE);
