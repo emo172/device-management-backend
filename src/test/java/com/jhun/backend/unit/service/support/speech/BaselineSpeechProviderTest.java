@@ -39,8 +39,8 @@ class BaselineSpeechProviderTest {
         AzureSpeechSdkClient azureSpeechSdkClient = mock(AzureSpeechSdkClient.class);
         BaselineSpeechProvider provider = new BaselineSpeechProvider(speechProperties, azureSpeechSdkClient);
         SpeechTranscriptionRequest request = new SpeechTranscriptionRequest(
-                "fake-webm".getBytes(StandardCharsets.UTF_8),
-                "audio/webm;codecs=opus",
+                "fake-ogg".getBytes(StandardCharsets.UTF_8),
+                "audio/ogg;codecs=opus",
                 SpeechContract.LOCALE_ZH_CN);
         SpeechTranscriptionResult expected = new SpeechTranscriptionResult(
                 "帮我预约明天下午两点的会议室",
@@ -95,8 +95,8 @@ class BaselineSpeechProviderTest {
         AzureSpeechSdkClient azureSpeechSdkClient = mock(AzureSpeechSdkClient.class);
         BaselineSpeechProvider provider = new BaselineSpeechProvider(speechProperties, azureSpeechSdkClient);
         SpeechTranscriptionRequest request = new SpeechTranscriptionRequest(
-                "fake-webm".getBytes(StandardCharsets.UTF_8),
-                "audio/webm",
+                "fake-ogg".getBytes(StandardCharsets.UTF_8),
+                "audio/ogg",
                 SpeechContract.LOCALE_ZH_CN);
         when(azureSpeechSdkClient.transcribe(any(), eq(request), eq(SpeechContract.PROVIDER_AZURE)))
                 .thenThrow(new AzureSpeechSdkClient.TimeoutException("Azure Speech 转写超时"));
@@ -138,8 +138,8 @@ class BaselineSpeechProviderTest {
         BaselineSpeechProvider provider = new BaselineSpeechProvider(speechProperties, azureSpeechSdkClient);
 
         assertThatThrownBy(() -> provider.transcribe(new SpeechTranscriptionRequest(
-                        "fake-webm".getBytes(StandardCharsets.UTF_8),
-                        "audio/webm",
+                        "fake-ogg".getBytes(StandardCharsets.UTF_8),
+                        "audio/ogg",
                         SpeechContract.LOCALE_ZH_CN)))
                 .isInstanceOf(SpeechProviderException.class)
                 .hasMessageContaining("当前仅支持 Azure Speech provider");

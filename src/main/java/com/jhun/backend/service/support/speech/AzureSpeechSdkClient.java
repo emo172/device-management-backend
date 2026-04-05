@@ -24,7 +24,7 @@ import org.springframework.stereotype.Component;
  * <p>
  * 该 helper 只承担官方 SDK 交互细节：
  * 1) 用 subscription key + region 创建 `SpeechConfig`；
- * 2) 通过压缩输入流接收浏览器上传的 `audio/webm;codecs=opus`；
+ * 2) 通过 `OGG_OPUS` 压缩输入流接收浏览器协商后的 `audio/ogg`（Opus）录音；
  * 3) 将 Azure 的识别/合成结果与 cancellation 细节归一化成 provider 可处理的内部异常。
  * 这样 `BaselineSpeechProvider` 仍能专注在配置守卫和异常模型翻译上，而不会被 SDK 细节淹没。
  */
@@ -34,7 +34,9 @@ public class AzureSpeechSdkClient {
     /**
      * 调用 Azure Speech 单次转写。
      * <p>
-     * 这里固定使用压缩输入流与 `ANY` 容器路径，避免把浏览器 webm/opus 录音误当成原始 PCM。
+     * Azure Java SDK 会在构造 `SpeechRecognizer` 时捕获 `SpeechConfig` 当前值，
+     * 因此语言配置必须先写入 `SpeechConfig`，再创建 recognizer；
+     * 同时这里固定使用 `OGG_OPUS` 容器，避免把浏览器录音误当成原始 PCM 或模糊 `ANY` 路径。
      */
     public SpeechTranscriptionResult transcribe(
             SpeechProperties.AzureProperties azureProperties,
@@ -43,17 +45,25 @@ public class AzureSpeechSdkClient {
         Objects.requireNonNull(azureProperties, "Azure Speech 配置不能为空");
         Objects.requireNonNull(request, "语音转写请求不能为空");
 
-        try (SpeechConfig speechConfig = SpeechConfig.fromSubscription(azureProperties.getKey(), azureProperties.getRegion());
-                PushAudioInputStream inputStream = PushAudioInputStream.createPushStream(
-                        AudioStreamFormat.getCompressedFormat(AudioStreamContainerFormat.ANY));
-                AudioConfig audioConfig = AudioConfig.fromStreamInput(inputStream);
-                SpeechRecognizer speechRecognizer = new SpeechRecognizer(speechConfig, audioConfig)) {
+        try (SpeechConfig speechConfig = SpeechConfig.fromSubscription(azureProperties.getKey(), azureProperties.getRegion())) {
             speechConfig.setSpeechRecognitionLanguage(request.locale());
-            inputStream.write(request.audioBytes());
-            inputStream.close();
+            PushAudioInputStream inputStream = PushAudioInputStream.createPushStream(
+                    AudioStreamFormat.getCompressedFormat(AudioStreamContainerFormat.OGG_OPUS));
+            boolean inputStreamClosed = false;
+            try (AudioConfig audioConfig = AudioConfig.fromStreamInput(inputStream);
+                    SpeechRecognizer speechRecognizer = new SpeechRecognizer(speechConfig, audioConfig)) {
+                inputStream.write(request.audioBytes());
+                inputStream.close();
+                inputStreamClosed = true;
 
-            SpeechRecognitionResult result = speechRecognizer.recognizeOnceAsync().get();
-            return mapTranscriptionResult(result, request.locale(), providerName);
+                try (SpeechRecognitionResult result = speechRecognizer.recognizeOnceAsync().get()) {
+                    return mapTranscriptionResult(result, request.locale(), providerName);
+                }
+            } finally {
+                if (!inputStreamClosed) {
+                    inputStream.close();
+                }
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new FailureException("Azure Speech 转写线程被中断", exception);
@@ -70,6 +80,8 @@ public class AzureSpeechSdkClient {
      * 调用 Azure Speech 单次文本合成。
      * <p>
      * v1 固定为中文 voice 与 MP3 输出，不引入下载、缓存或多音色切换语义。
+     * `SpeechSynthesizer` 也必须在 voice / format 等配置写入之后再创建，
+     * 否则 SDK 可能退回默认 voice 或默认音频格式，与接口固定的 `audio/mpeg` 契约冲突。
      */
     public SpeechSynthesisResult synthesize(
             SpeechProperties.AzureProperties azureProperties,
@@ -78,16 +90,16 @@ public class AzureSpeechSdkClient {
         Objects.requireNonNull(azureProperties, "Azure Speech 配置不能为空");
         Objects.requireNonNull(request, "语音合成请求不能为空");
 
-        try (SpeechConfig speechConfig = SpeechConfig.fromSubscription(azureProperties.getKey(), azureProperties.getRegion());
-                SpeechSynthesizer speechSynthesizer = new SpeechSynthesizer(speechConfig, (AudioConfig) null)) {
+        try (SpeechConfig speechConfig = SpeechConfig.fromSubscription(azureProperties.getKey(), azureProperties.getRegion())) {
             speechConfig.setSpeechSynthesisLanguage(request.locale());
             speechConfig.setSpeechSynthesisVoiceName(SpeechContract.TTS_VOICE_NAME);
             speechConfig.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3);
-
-            com.microsoft.cognitiveservices.speech.SpeechSynthesisResult result = speechSynthesizer
-                    .SpeakTextAsync(request.text())
-                    .get();
-            return mapSynthesisResult(result, providerName);
+            try (SpeechSynthesizer speechSynthesizer = new SpeechSynthesizer(speechConfig, (AudioConfig) null);
+                    com.microsoft.cognitiveservices.speech.SpeechSynthesisResult result = speechSynthesizer
+                            .SpeakTextAsync(request.text())
+                            .get()) {
+                return mapSynthesisResult(result, providerName);
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new FailureException("Azure Speech 合成线程被中断", exception);
