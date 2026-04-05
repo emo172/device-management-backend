@@ -66,8 +66,8 @@ class AiSpeechFeatureFlagIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.webm",
-                                "audio/webm",
+                                "voice.ogg",
+                                "audio/ogg",
                                 "fake-audio".getBytes(StandardCharsets.UTF_8)))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
@@ -93,8 +93,8 @@ class AiSpeechFeatureFlagIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.webm",
-                                "audio/webm",
+                                "voice.ogg",
+                                "audio/ogg",
                                 "fake-audio".getBytes(StandardCharsets.UTF_8)))
                         .header("Authorization", bearer(deviceAdmin, "DEVICE_ADMIN")))
                 .andExpect(status().isForbidden());
