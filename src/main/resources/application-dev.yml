@@ -23,3 +23,12 @@ spring:
           auth: true
           starttls:
             enable: true
+
+speech:
+  # 开发环境默认继续关闭语音。要本地验证桌面 Chrome / Edge 语音链路时，再通过外部环境变量补齐 Azure Speech 凭据并手动打开。
+  enabled: ${SPEECH_ENABLED:false}
+  provider: ${SPEECH_PROVIDER:azure}
+  azure:
+    # 仅保留真实可绑定的占位键，避免 README 与部署文档引用仓库里不存在的配置名。
+    region: ${SPEECH_AZURE_REGION:}
+    key: ${SPEECH_AZURE_KEY:}
