@@ -137,6 +137,7 @@ public class SpeechServiceImpl implements SpeechService {
      * <p>
      * 这里显式把正式支持口径收敛成 `audio/ogg` 与 `audio/ogg;codecs=opus` 两种规范字符串，
      * 后续 provider 只需要面向固定值编排 Azure SDK，不必再在底层重复处理 HTTP 头细节。
+     * 同时这里必须拒绝 `audio/*` 这类通配 MIME，避免非特定容器绕过“仅支持 Ogg/Opus”合同后在更深层失败。
      */
     private String normalizeSupportedTranscriptionContentType(String contentType) {
         if (!StringUtils.hasText(contentType)) {
@@ -144,7 +145,11 @@ public class SpeechServiceImpl implements SpeechService {
         }
         try {
             MediaType mediaType = MediaType.parseMediaType(contentType);
-            if (!SUPPORTED_TRANSCRIPTION_MEDIA_TYPE.isCompatibleWith(mediaType)) {
+            if (mediaType.isWildcardType() || mediaType.isWildcardSubtype()) {
+                return null;
+            }
+            if (!SUPPORTED_TRANSCRIPTION_MEDIA_TYPE.getType().equalsIgnoreCase(mediaType.getType())
+                    || !SUPPORTED_TRANSCRIPTION_MEDIA_TYPE.getSubtype().equalsIgnoreCase(mediaType.getSubtype())) {
                 return null;
             }
             String codecs = mediaType.getParameter("codecs");

@@ -115,6 +115,29 @@ class AiSpeechValidationIntegrationTest {
     }
 
     /**
+     * 验证 `audio/*` 这类通配 MIME 不会被当成 `audio/ogg` 合法变体放行。
+     * <p>
+     * 这样可以避免客户端只给出模糊音频大类时，服务层误把请求继续送进 provider，
+     * 最终把“合同不匹配”伪装成第三方语音失败。
+     */
+    @Test
+    void shouldRejectWildcardAudioContentType() throws Exception {
+        User user = createUser("speech-wildcard-user", "speech-wildcard-user@example.com", "USER");
+
+        mockMvc.perform(multipart("/api/ai/speech/transcriptions")
+                        .file(new MockMultipartFile(
+                                "file",
+                                "voice.bin",
+                                "audio/*",
+                                "fake-ambiguous-audio".getBytes(StandardCharsets.UTF_8)))
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
+
+        verify(speechProvider, never()).transcribe(any());
+    }
+
+    /**
      * 验证超过 10MB 的录音会被显式拒绝，避免超大上传继续进入 provider 调用链。
      */
     @Test
