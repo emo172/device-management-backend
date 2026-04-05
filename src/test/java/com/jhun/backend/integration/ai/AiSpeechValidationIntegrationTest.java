@@ -72,7 +72,7 @@ class AiSpeechValidationIntegrationTest {
     }
 
     /**
-     * 验证只支持浏览器 webm 录音，避免把 Safari mp4 或其他类型误放进 v1 合同。
+     * 验证正式合同只接受 Ogg/Opus 录音，避免把 mp4 或其他未验证容器误放进 v1 合同。
      */
     @Test
     void shouldRejectUnsupportedContentType() throws Exception {
@@ -92,6 +92,29 @@ class AiSpeechValidationIntegrationTest {
     }
 
     /**
+     * 验证 codecs 参数里若不包含 Opus，会在服务层被直接拒绝。
+     * <p>
+     * 这样可以避免前端传来 `audio/ogg` 但实际编码不是 Azure 当前正式支持路径时，
+     * 还继续把不兼容字节流送进 SDK 才在更深层失败。
+     */
+    @Test
+    void shouldRejectOggWithoutOpusCodec() throws Exception {
+        User user = createUser("speech-codec-user", "speech-invalid-codec-user@example.com", "USER");
+
+        mockMvc.perform(multipart("/api/ai/speech/transcriptions")
+                        .file(new MockMultipartFile(
+                                "file",
+                                "voice.ogg",
+                                "audio/ogg;codecs=pcm",
+                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8)))
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
+
+        verify(speechProvider, never()).transcribe(any());
+    }
+
+    /**
      * 验证超过 10MB 的录音会被显式拒绝，避免超大上传继续进入 provider 调用链。
      */
     @Test
@@ -101,8 +124,8 @@ class AiSpeechValidationIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.webm",
-                                "audio/webm",
+                                "voice.ogg",
+                                "audio/ogg",
                                 new byte[(int) SpeechContract.MAX_UPLOAD_SIZE_BYTES + 1]))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
@@ -122,9 +145,9 @@ class AiSpeechValidationIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.webm",
-                                "audio/webm",
-                                "fake-webm-audio".getBytes(StandardCharsets.UTF_8)))
+                                "voice.ogg",
+                                "audio/ogg",
+                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8)))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(SpeechContract.TRANSCRIPTION_TIMEOUT_MESSAGE));
@@ -141,9 +164,9 @@ class AiSpeechValidationIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.webm",
-                                "audio/webm",
-                                "fake-webm-audio".getBytes(StandardCharsets.UTF_8)))
+                                "voice.ogg",
+                                "audio/ogg",
+                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8)))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(SpeechContract.TRANSCRIPTION_FAILED_MESSAGE));

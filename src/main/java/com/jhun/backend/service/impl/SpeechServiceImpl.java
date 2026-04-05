@@ -15,7 +15,11 @@ import com.jhun.backend.service.support.speech.SpeechSynthesisResult;
 import com.jhun.backend.service.support.speech.SpeechTranscriptionRequest;
 import com.jhun.backend.service.support.speech.SpeechTranscriptionResult;
 import java.io.IOException;
+import java.util.Arrays;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
@@ -27,6 +31,8 @@ import org.springframework.web.multipart.MultipartFile;
  */
 @Service
 public class SpeechServiceImpl implements SpeechService {
+
+    private static final MediaType SUPPORTED_TRANSCRIPTION_MEDIA_TYPE = MediaType.parseMediaType("audio/ogg");
 
     private final ChatHistoryMapper chatHistoryMapper;
 
@@ -47,11 +53,11 @@ public class SpeechServiceImpl implements SpeechService {
     public AiSpeechTranscriptionResponse transcribe(String userId, String role, MultipartFile file) {
         validateSpeechRole(role);
         ensureSpeechEnabled();
-        validateTranscriptionFile(file);
+        String normalizedContentType = validateTranscriptionFile(file);
         try {
             SpeechTranscriptionResult result = speechProvider.transcribe(new SpeechTranscriptionRequest(
                     file.getBytes(),
-                    file.getContentType(),
+                    normalizedContentType,
                     SpeechContract.LOCALE_ZH_CN));
             return new AiSpeechTranscriptionResponse(result.transcript(), result.locale(), result.provider());
         } catch (SpeechProviderTimeoutException exception) {
@@ -106,20 +112,52 @@ public class SpeechServiceImpl implements SpeechService {
     }
 
     /**
-     * 转写入口只接受浏览器录音 `audio/webm`，并限制在 10MB 以内。
+     * 转写入口只接受浏览器协商后的 `audio/ogg`（Opus）录音，并限制在 10MB 以内。
      * <p>
      * 这里故意在服务层做二次显式校验，而不是完全依赖 multipart 基础设施，
-     * 这样可以稳定返回统一业务错误，同时保证失败路径不会创建本地临时文件或遗留磁盘副本。
+     * 这样可以稳定返回统一业务错误，同时把前端可能携带的空白、大小写或 codecs 参数差异规范化，
+     * 避免浏览器已经协商出 Ogg/Opus，但因为 multipart 头格式细节不同被误拒。
      */
-    private void validateTranscriptionFile(MultipartFile file) {
+    private String validateTranscriptionFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new BusinessException(SpeechContract.EMPTY_AUDIO_MESSAGE);
         }
-        if (!SpeechContract.SUPPORTED_INPUT_CONTENT_TYPES.contains(file.getContentType())) {
+        String normalizedContentType = normalizeSupportedTranscriptionContentType(file.getContentType());
+        if (normalizedContentType == null) {
             throw new BusinessException(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE);
         }
         if (file.getSize() > speechProperties.getMaxUploadSizeBytes()) {
             throw new BusinessException(SpeechContract.FILE_TOO_LARGE_MESSAGE);
+        }
+        return normalizedContentType;
+    }
+
+    /**
+     * multipart `Content-Type` 在大小写、空白与参数顺序上都可能存在浏览器差异。
+     * <p>
+     * 这里显式把正式支持口径收敛成 `audio/ogg` 与 `audio/ogg;codecs=opus` 两种规范字符串，
+     * 后续 provider 只需要面向固定值编排 Azure SDK，不必再在底层重复处理 HTTP 头细节。
+     */
+    private String normalizeSupportedTranscriptionContentType(String contentType) {
+        if (!StringUtils.hasText(contentType)) {
+            return null;
+        }
+        try {
+            MediaType mediaType = MediaType.parseMediaType(contentType);
+            if (!SUPPORTED_TRANSCRIPTION_MEDIA_TYPE.isCompatibleWith(mediaType)) {
+                return null;
+            }
+            String codecs = mediaType.getParameter("codecs");
+            if (!StringUtils.hasText(codecs)) {
+                return SpeechContract.SUPPORTED_INPUT_CONTENT_TYPES.get(0);
+            }
+            boolean containsOpusCodec = Arrays.stream(codecs.split(","))
+                    .map(String::trim)
+                    .filter(StringUtils::hasText)
+                    .anyMatch(codec -> "opus".equalsIgnoreCase(codec));
+            return containsOpusCodec ? SpeechContract.SUPPORTED_INPUT_CONTENT_TYPES.get(1) : null;
+        } catch (InvalidMediaTypeException exception) {
+            return null;
         }
     }
 }

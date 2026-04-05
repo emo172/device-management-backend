@@ -1,5 +1,6 @@
 package com.jhun.backend.integration.ai;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -15,11 +16,13 @@ import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.support.speech.SpeechContract;
 import com.jhun.backend.service.support.speech.SpeechProvider;
+import com.jhun.backend.service.support.speech.SpeechTranscriptionRequest;
 import com.jhun.backend.service.support.speech.SpeechTranscriptionResult;
 import com.jhun.backend.util.UuidUtil;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.mock.web.MockMultipartFile;
@@ -34,7 +37,7 @@ import org.springframework.web.context.WebApplicationContext;
 /**
  * AI 语音转写接口集成测试。
  * <p>
- * 该测试锁定 task 2 的成功链路：认证用户上传浏览器 webm 录音后，
+ * 该测试锁定 task 2 的成功链路：认证用户上传浏览器协商出的 Ogg/Opus 录音后，
  * 后端会把音频字节、内容类型和固定中文 locale 交给独立 speech provider，并回传稳定响应结构。
  */
 @SpringBootTest
@@ -70,16 +73,19 @@ class AiSpeechTranscriptionIntegrationTest {
     }
 
     /**
-     * 验证普通用户可以上传受支持的 webm 录音并拿到固定 locale 的转写结果。
+     * 验证普通用户可以上传受支持的 Ogg/Opus 录音并拿到固定 locale 的转写结果。
+     * <p>
+     * 这里故意把 multipart 头写成 `audio/ogg; codecs=opus`，
+     * 以防服务层再次退化成对空白差异不兼容的字符串硬匹配。
      */
     @Test
-    void shouldTranscribeWebmAudioForAuthenticatedUser() throws Exception {
+    void shouldTranscribeOggAudioForAuthenticatedUser() throws Exception {
         User user = createUser("speech-tx-user", "speech-transcribe-user@example.com", "USER");
         MockMultipartFile file = new MockMultipartFile(
                 "file",
-                "voice.webm",
-                "audio/webm;codecs=opus",
-                "fake-webm-audio".getBytes(StandardCharsets.UTF_8));
+                "voice.ogg",
+                "audio/ogg; codecs=opus",
+                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8));
         when(speechProvider.transcribe(any())).thenReturn(new SpeechTranscriptionResult(
                 "帮我预约明天下午两点的会议室",
                 SpeechContract.LOCALE_ZH_CN,
@@ -93,7 +99,10 @@ class AiSpeechTranscriptionIntegrationTest {
                 .andExpect(jsonPath("$.data.locale").value(SpeechContract.LOCALE_ZH_CN))
                 .andExpect(jsonPath("$.data.provider").value(SpeechContract.PROVIDER_AZURE));
 
-        verify(speechProvider).transcribe(any());
+        ArgumentCaptor<SpeechTranscriptionRequest> requestCaptor = ArgumentCaptor.forClass(SpeechTranscriptionRequest.class);
+        verify(speechProvider).transcribe(requestCaptor.capture());
+        assertEquals("audio/ogg;codecs=opus", requestCaptor.getValue().contentType());
+        assertEquals(SpeechContract.LOCALE_ZH_CN, requestCaptor.getValue().locale());
     }
 
     /**
@@ -104,9 +113,9 @@ class AiSpeechTranscriptionIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.webm",
-                                "audio/webm",
-                                "fake-webm-audio".getBytes(StandardCharsets.UTF_8))))
+                                "voice.ogg",
+                                "audio/ogg",
+                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8))))
                 .andExpect(status().isUnauthorized());
     }
 
