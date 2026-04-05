@@ -150,13 +150,16 @@ mvn clean verify
 - 移动端 App / 微信小程序
 - 微信通知、日历同步、开放平台、多语言
 - 独立维修工单、财务结算、Excel / PDF 文件导出
-- 语音正式能力（仅预留扩展入口，不实现 ASR / TTS）
+- Safari / 移动端语音录音支持、多供应商 ASR / TTS provider
 - RAG、联网检索、多模型编排、Agent 自主决策、图像识别
 - 开放式库存系统、财务结算、推荐系统、长期记忆
 
 ### 04-3 AI 能力边界
 
-- 本期 AI 以**文本对话**为主，语音只保留扩展入口
+- 本期 AI 已支持文本对话、语音转写与基于历史回复的语音播报，语音总开关由 `speech.enabled` 控制
+- v1 语音 provider 仅 Azure Speech，发布阻塞浏览器矩阵以桌面 Chrome / Edge 为准，不把 Safari 或移动端写成已正式支持
+- 语音录音会经过第三方云语音处理，但原始录音不做持久化存储；历史播放按需基于 `chat_history.aiResponse` 生成
+- 第三方云语音的合规 / 隐私审批是上线前置条件，文档同步不代表审批已完成
 - AI 只能通过 Service 层调用业务能力，不得直接写数据库
 - AI 意图固定为 `RESERVE` / `QUERY` / `CANCEL` / `HELP` / `UNKNOWN`
 - Prompt 模板是正式模块；`DialogConfig` 当前无稳定数据模型，不纳入本期实现范围

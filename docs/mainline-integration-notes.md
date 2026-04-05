@@ -10,10 +10,10 @@
 - 设备与分类
 - 预约 / 审批 / 签到
 - 借还 / 逾期 / 通知
+- AI 对话与语音辅助链路
 
 当前首轮不包含：
 
-- AI
 - 统计分析
 - Prompt 模板
 - 批量预约结果页
@@ -59,6 +59,15 @@ npm run dev
 ```
 
 前端开发环境默认把 `/api` 与 `/files` 代理到 `http://localhost:8080`。
+
+## AI 语音 v1 联调前提
+
+- 后端 `speech.enabled` 是语音总开关，保持 `false` 时前端必须优雅回退到文字对话与历史查看
+- v1 语音 provider 仅 Azure Speech，联调前至少准备 `SPEECH_AZURE_REGION` 与 `SPEECH_AZURE_KEY`
+- 当前发布阻塞浏览器矩阵仅覆盖桌面版 Chrome / Edge，不把 Safari 或移动端写成已正式支持
+- 录音转写会经过第三方云语音服务处理，但原始录音不做持久化存储
+- 历史播放会按需基于 `chat_history.aiResponse` 生成，不预存整段历史音频
+- 第三方云语音的合规 / 隐私审批是上线前置条件，当前文档同步不代表审批已经完成
 
 ## 关键联调契约
 
@@ -163,7 +172,8 @@ npm run type-check && npm run build && npm run test:unit
 
 ## 已知边界
 
-- 本轮不处理 AI、统计、Prompt 模板和批量预约结果页
+- 本轮仍不处理统计、Prompt 模板和批量预约结果页
+- AI 语音 v1 仅以桌面版 Chrome / Edge 为发布阻塞浏览器范围，且上线前必须完成第三方云语音合规 / 隐私审批
 - 通知列表兼容接口保持 `GET /api/notifications` 数组返回；服务端分页与通知类型筛选通过 `GET /api/notifications/page` 承接
 - 通知中心当前采用轮询刷新，不提供 WebSocket / SSE 实时推送
 - 若本地环境未准备 MySQL / Redis，或无法确认 smoke 账号明文密码，则只能先完成自动化验证，人工冒烟需要待环境补齐后再执行
