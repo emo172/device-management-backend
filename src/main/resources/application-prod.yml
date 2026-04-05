@@ -21,3 +21,12 @@ spring:
 
 ai:
   enabled: true
+
+speech:
+  # 生产环境默认继续关闭语音，只有完成 Azure Speech 凭据注入、桌面 Chrome / Edge 验收与合规审批后才允许开启。
+  enabled: ${SPEECH_ENABLED:false}
+  provider: ${SPEECH_PROVIDER:azure}
+  azure:
+    # 生产环境真实凭据只通过环境变量注入，仓库内不落任何固定值。
+    region: ${SPEECH_AZURE_REGION:}
+    key: ${SPEECH_AZURE_KEY:}

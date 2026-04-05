@@ -38,3 +38,11 @@ ai:
 mybatis-plus:
   configuration:
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+speech:
+  # 测试 profile 默认继续关闭语音，并使用假凭据占位，确保配置真相源与文档中的 Azure 键保持一致。
+  enabled: false
+  provider: azure
+  azure:
+    region: ${SPEECH_AZURE_REGION:test-region}
+    key: ${SPEECH_AZURE_KEY:test-speech-key}

@@ -47,6 +47,11 @@ services:
       MAIL_PORT: 587
       MAIL_USERNAME: noreply@example.com
       MAIL_PASSWORD: change-me
+      # 语音默认继续关闭；只有 Azure Speech 凭据、桌面 Chrome / Edge 验收与第三方云语音合规审批完成后再通过环境变量打开。
+      SPEECH_ENABLED: ${SPEECH_ENABLED:-false}
+      SPEECH_PROVIDER: ${SPEECH_PROVIDER:-azure}
+      SPEECH_AZURE_REGION: ${SPEECH_AZURE_REGION:-}
+      SPEECH_AZURE_KEY: ${SPEECH_AZURE_KEY:-}
     ports:
       - "8080:8080"
 
