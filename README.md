@@ -64,6 +64,7 @@ cd <当前后端仓库目录>
 - `speech.enabled` 是语音总开关，默认应保持关闭；只有完成部署配置、桌面版 Chrome / Edge 验收和第三方云语音合规审批后才考虑打开
 - v1 语音 provider 仅 Azure Speech，当前部署最少需要准备 `SPEECH_AZURE_REGION` 与 `SPEECH_AZURE_KEY`
 - 发布阻塞浏览器矩阵仅覆盖桌面版 Chrome / Edge，Safari 与移动端暂不作为已正式支持范围
+- 浏览器录音正式上传口径固定为 `audio/ogg;codecs=opus`；前端应先用 `MediaRecorder.isTypeSupported(...)` 探测，若当前浏览器拿不到该格式就回退到文字对话
 - 录音转写会经过第三方云语音服务处理，但原始录音不做持久化存储
 - 历史播放会按需基于 `chat_history.aiResponse` 生成，不预存整段历史音频
 - 语音入口关闭或浏览器不支持时，前端应继续保留文字对话与历史查看，不把回退路径当成异常
