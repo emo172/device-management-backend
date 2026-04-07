@@ -23,10 +23,12 @@ ai:
   enabled: true
 
 speech:
-  # 生产环境默认继续关闭语音，只有完成 Azure Speech 凭据注入、桌面 Chrome / Edge 验收与合规审批后才允许开启。
+  # 生产环境语音链路固定为讯飞 ASR-only，`/api/ai/speech/transcriptions` 只返回最终 transcript，
+  # 前端收到结果后只回填输入框，仍需用户手动发送。
   enabled: ${SPEECH_ENABLED:false}
-  provider: ${SPEECH_PROVIDER:azure}
-  azure:
-    # 生产环境真实凭据只通过环境变量注入，仓库内不落任何固定值。
-    region: ${SPEECH_AZURE_REGION:}
-    key: ${SPEECH_AZURE_KEY:}
+  provider: ${SPEECH_PROVIDER:iflytek}
+  iflytek:
+    # 生产环境真实凭据只通过环境变量注入，仓库内不落任何固定值；一期也不接入 `res_id` 热词。
+    app-id: ${SPEECH_IFLYTEK_APP_ID:}
+    api-key: ${SPEECH_IFLYTEK_API_KEY:}
+    api-secret: ${SPEECH_IFLYTEK_API_SECRET:}

@@ -40,9 +40,11 @@ mybatis-plus:
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 
 speech:
-  # 测试 profile 默认继续关闭语音，并使用假凭据占位，确保配置真相源与文档中的 Azure 键保持一致。
+  # 测试 profile 只保留讯飞 ASR-only 骨架，下面的假值只用于条件装配与断言，
+  # 不代表真实可用凭据，也不要求补充 `res_id`。
   enabled: false
-  provider: azure
-  azure:
-    region: ${SPEECH_AZURE_REGION:test-region}
-    key: ${SPEECH_AZURE_KEY:test-speech-key}
+  provider: iflytek
+  iflytek:
+    app-id: ${SPEECH_IFLYTEK_APP_ID:test-app-id}
+    api-key: ${SPEECH_IFLYTEK_API_KEY:test-api-key}
+    api-secret: ${SPEECH_IFLYTEK_API_SECRET:test-api-secret}

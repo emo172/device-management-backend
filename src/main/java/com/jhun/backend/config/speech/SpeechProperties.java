@@ -2,26 +2,20 @@ package com.jhun.backend.config.speech;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/**
- * 语音配置属性。
- * <p>
- * 当前阶段显式暴露 `speech.enabled`、provider、上传大小限制与 Azure Speech 凭据占位。
- * 中文 locale、浏览器录音格式和 TTS 输出格式继续由语音契约常量统一固化，避免运行时配置改写联调口径。
- */
 @ConfigurationProperties(prefix = "speech")
 public class SpeechProperties {
 
     private boolean enabled = false;
 
-    private String provider = "azure";
+    private String provider = "iflytek";
 
-    private AzureProperties azure = new AzureProperties();
+    private IflytekProperties iflytek = new IflytekProperties();
 
     /**
      * 浏览器录音上传大小上限。
      * <p>
-     * 这里默认固定为 10MB，与 task 2 的接口契约保持一致；
-     * 服务层仍会基于该值做显式校验，避免仅依赖容器默认 multipart 行为导致错误语义不稳定。
+     * 正式公开合同已冻结为 `audio/wav`（16k / 16bit / 单声道 PCM）且最长 60 秒，理论大小远小于 10MB；
+     * 这里继续保留 10MB 作为服务层兜底上限，确保超限时仍能返回稳定业务错误，而不是落回容器默认异常。
      */
     private long maxUploadSizeBytes = 10L * 1024 * 1024;
 
@@ -41,12 +35,12 @@ public class SpeechProperties {
         this.provider = provider;
     }
 
-    public AzureProperties getAzure() {
-        return azure;
+    public IflytekProperties getIflytek() {
+        return iflytek;
     }
 
-    public void setAzure(AzureProperties azure) {
-        this.azure = azure;
+    public void setIflytek(IflytekProperties iflytek) {
+        this.iflytek = iflytek;
     }
 
     public long getMaxUploadSizeBytes() {
@@ -57,32 +51,36 @@ public class SpeechProperties {
         this.maxUploadSizeBytes = maxUploadSizeBytes;
     }
 
-    /**
-     * Azure Speech 凭据占位。
-     * <p>
-     * 当前 provider 基线实现仍通过测试替身和 feature flag 控制行为，但文档与部署配置需要有真实可绑定的键，
-     * 避免把不存在的环境变量名写进仓库说明。
-     */
-    public static class AzureProperties {
+    public static class IflytekProperties {
 
-        private String region = "";
+        private String appId = "";
 
-        private String key = "";
+        private String apiKey = "";
 
-        public String getRegion() {
-            return region;
+        private String apiSecret = "";
+
+        public String getAppId() {
+            return appId;
         }
 
-        public void setRegion(String region) {
-            this.region = region;
+        public void setAppId(String appId) {
+            this.appId = appId;
         }
 
-        public String getKey() {
-            return key;
+        public String getApiKey() {
+            return apiKey;
         }
 
-        public void setKey(String key) {
-            this.key = key;
+        public void setApiKey(String apiKey) {
+            this.apiKey = apiKey;
+        }
+
+        public String getApiSecret() {
+            return apiSecret;
+        }
+
+        public void setApiSecret(String apiSecret) {
+            this.apiSecret = apiSecret;
         }
     }
 }
