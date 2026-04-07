@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="DeviceManagementBackend Dev Qwen" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+    <option name="ACTIVE_PROFILES" value="dev,local" />
+    <module name="backend" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.jhun.backend.DeviceManagementBackendApplication" />
+    <envs>
+      <env name="SPRING_PROFILES_ACTIVE" value="dev,local" />
+    </envs>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
