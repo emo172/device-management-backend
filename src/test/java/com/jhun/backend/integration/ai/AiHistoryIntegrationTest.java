@@ -21,6 +21,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -28,10 +29,13 @@ import org.springframework.web.context.WebApplicationContext;
 /**
  * AI 历史接口集成测试。
  * <p>
- * 该测试重点保护“只能查看本人 AI 历史”的数据隔离规则，并验证列表与详情接口都能读取同一张历史表。
+ * 该测试类显式在 `ai.enabled=false` 背景下运行，重点锁定“聊天开关不影响历史”的后端语义：
+ * 即使新的 `/api/ai/chat` 已关闭，历史列表与详情对拥有者仍必须返回 200，
+ * 同时继续保护“只能查看本人 AI 历史”的数据隔离规则。
  */
 @SpringBootTest
 @ActiveProfiles("test")
+@TestPropertySource(properties = "ai.enabled=false")
 class AiHistoryIntegrationTest {
 
     @Autowired
@@ -62,10 +66,10 @@ class AiHistoryIntegrationTest {
     }
 
     /**
-     * 验证历史列表只返回当前登录人的记录，避免不同用户之间互相看到对话内容。
+     * 验证聊天开关关闭时，历史列表仍对当前登录人可见，并且继续只返回本人记录。
      */
     @Test
-    void shouldListOnlyCurrentUserHistory() throws Exception {
+    void shouldKeepOwnerHistoryListVisibleWhenChatFeatureDisabled() throws Exception {
         User currentUser = createUser("history-user", "history-user@example.com", "USER");
         User otherUser = createUser("history-user-other", "history-user-other@example.com", "USER");
         String currentHistoryId = insertChatHistory(
@@ -88,10 +92,10 @@ class AiHistoryIntegrationTest {
     }
 
     /**
-     * 验证历史详情接口只能读取本人记录，请求他人记录时应返回业务失败而不是泄露数据。
+     * 验证聊天开关关闭时，历史详情仍允许拥有者读取本人记录，请求他人记录时继续返回业务失败而不是泄露数据。
      */
     @Test
-    void shouldReturnOnlyOwnedHistoryDetail() throws Exception {
+    void shouldKeepOwnerHistoryDetailVisibleWhenChatFeatureDisabled() throws Exception {
         User currentUser = createUser("history-detail-user", "history-detail-user@example.com", "USER");
         User otherUser = createUser("history-detail-other", "history-detail-other@example.com", "USER");
         String ownedHistoryId = insertChatHistory(
@@ -118,10 +122,10 @@ class AiHistoryIntegrationTest {
     }
 
     /**
-     * 验证历史列表存在固定上限，避免单次请求把用户全部历史记录一次性拉回。
+     * 验证聊天开关关闭时，历史列表仍保留固定上限，避免单次请求把用户全部历史记录一次性拉回。
      */
     @Test
-    void shouldLimitAiHistoryListSize() throws Exception {
+    void shouldStillLimitAiHistoryListSizeWhenChatFeatureDisabled() throws Exception {
         User currentUser = createUser("history-limit-user", "history-limit-user@example.com", "USER");
         for (int index = 0; index < 25; index++) {
             insertChatHistory(

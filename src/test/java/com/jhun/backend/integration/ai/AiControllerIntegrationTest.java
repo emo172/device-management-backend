@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jhun.backend.common.enums.AiExecuteResult;
 import com.jhun.backend.common.enums.AiIntentType;
 import com.jhun.backend.common.enums.PromptTemplateType;
+import com.jhun.backend.config.ai.AiRuntimeProperties;
 import com.jhun.backend.config.security.JwtTokenProvider;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
@@ -43,6 +44,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -87,6 +89,9 @@ class AiControllerIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private AiRuntimeProperties aiRuntimeProperties;
+
     @MockitoBean
     private QwenOpenAiClient qwenOpenAiClient;
 
@@ -101,6 +106,7 @@ class AiControllerIntegrationTest {
          * 这里每次显式 reset，是为了避免前一个用例分配的 staged Qwen 响应串到后一个用例，影响集成测试的确定性。
          */
         reset(qwenOpenAiClient);
+        setChatEnabled(true);
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
@@ -266,6 +272,31 @@ class AiControllerIntegrationTest {
                                 }
                                 """))
                 .andExpect(status().isForbidden());
+
+        verifyNoInteractions(qwenOpenAiClient);
+    }
+
+    /**
+     * 验证聊天开关关闭时只阻断新的 `/api/ai/chat` 请求并返回既有 400 业务错误。
+     * <p>
+     * 该回归专门防止后续把 `ai.enabled` 误扩散成“总 AI 开关”：
+     * 聊天开关不影响历史，这条语义由 `AiHistoryIntegrationTest` 继续单独保护。
+     */
+    @Test
+    void shouldRejectNewAiChatWhenChatFeatureDisabledWithoutChangingHistoryContract() throws Exception {
+        User user = createUser("ai-chat-off-user", "ai-chat-off-user@example.com", "USER");
+        setChatEnabled(false);
+
+        mockMvc.perform(post("/api/ai/chat")
+                        .header("Authorization", bearer(user, "USER"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "message": "帮我查询今天的预约"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("AI 对话功能当前已关闭，请联系管理员开启 ai.enabled 后再试"));
 
         verifyNoInteractions(qwenOpenAiClient);
     }
@@ -480,6 +511,16 @@ class AiControllerIntegrationTest {
 
     private LocalDateTime alignedNow() {
         return LocalDateTime.now().truncatedTo(ChronoUnit.MINUTES);
+    }
+
+    /**
+     * 测试上下文默认以 `ai.enabled=true` 启动 qwen 集成链路。
+     * <p>
+     * 这里通过反射只在单个用例内临时翻转 `chatEnabled`，用最小改动补上“聊天开关关闭即 400”回归，
+     * 同时不引入新的测试上下文或改变既有 qwen 编排覆盖面。
+     */
+    private void setChatEnabled(boolean chatEnabled) {
+        ReflectionTestUtils.setField(aiRuntimeProperties, "chatEnabled", chatEnabled);
     }
 
     private QwenOpenAiChatCompletionResponse stage1ExtractionResponse(
