@@ -26,6 +26,7 @@ DROP TABLE IF EXISTS `notification_record`;
 DROP TABLE IF EXISTS `overdue_record`;
 DROP TABLE IF EXISTS `borrow_record`;
 DROP TABLE IF EXISTS `device_status_log`;
+DROP TABLE IF EXISTS `reservation_device`;
 DROP TABLE IF EXISTS `reservation`;
 DROP TABLE IF EXISTS `reservation_batch`;
 DROP TABLE IF EXISTS `device`;
@@ -212,7 +213,7 @@ CREATE TABLE `reservation` (
     `user_id` VARCHAR(36) NOT NULL COMMENT '实际预约用户ID',
     `created_by` VARCHAR(36) NOT NULL COMMENT '创建人ID；本人预约时与user_id一致，代预约时为系统管理员',
     `reservation_mode` VARCHAR(20) NOT NULL DEFAULT 'SELF' COMMENT '预约模式：SELF/ON_BEHALF',
-    `device_id` VARCHAR(36) NOT NULL COMMENT '预约设备ID',
+    `device_id` VARCHAR(36) NULL COMMENT '旧单设备模型遗留的主设备兼容字段；正式真相已迁移到 reservation_device',
     `start_time` DATETIME NOT NULL COMMENT '预约开始时间',
     `end_time` DATETIME NOT NULL COMMENT '预约结束时间',
     `purpose` VARCHAR(500) NOT NULL COMMENT '预约用途',
@@ -256,6 +257,24 @@ CREATE TABLE `reservation` (
     CONSTRAINT `chk_reservation_sign_status` CHECK (`sign_status` IN ('NOT_CHECKED_IN', 'CHECKED_IN', 'CHECKED_IN_TIMEOUT'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='预约表';
 
+-- 3.3 预约设备关联表（reservation_device）
+CREATE TABLE `reservation_device` (
+    `id` VARCHAR(36) NOT NULL COMMENT '关联记录唯一标识（UUID）',
+    `reservation_id` VARCHAR(36) NOT NULL COMMENT '所属预约ID',
+    `device_id` VARCHAR(36) NOT NULL COMMENT '关联设备ID，作为预约聚合的正式设备真相',
+    `device_order` INT NOT NULL DEFAULT 0 COMMENT '设备在预约聚合中的顺序；当前阶段 0 代表主设备兼容投影',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_reservation_device_reservation_device` (`reservation_id`, `device_id`),
+    UNIQUE KEY `uk_reservation_device_reservation_order` (`reservation_id`, `device_order`),
+    KEY `idx_reservation_device_reservation_id` (`reservation_id`),
+    KEY `idx_reservation_device_device_id` (`device_id`),
+    KEY `idx_reservation_device_device_reservation` (`device_id`, `reservation_id`),
+    CONSTRAINT `fk_reservation_device_reservation_id` FOREIGN KEY (`reservation_id`) REFERENCES `reservation` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_reservation_device_device_id` FOREIGN KEY (`device_id`) REFERENCES `device` (`id`) ON DELETE RESTRICT,
+    CONSTRAINT `chk_reservation_device_order_non_negative` CHECK (`device_order` >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='预约与设备关联表';
+
 -- ============================================================
 -- 4. 借还管理模块
 -- ============================================================
@@ -278,7 +297,9 @@ CREATE TABLE `borrow_record` (
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_borrow_reservation_id` (`reservation_id`),
+    -- 同一预约聚合在多设备模式下会按设备扇出多条 borrow_record，因此唯一约束必须收敛到 reservation_id + device_id。
+    UNIQUE KEY `uk_borrow_reservation_device` (`reservation_id`, `device_id`),
+    KEY `idx_borrow_reservation_id` (`reservation_id`),
     KEY `idx_borrow_device_id` (`device_id`),
     KEY `idx_borrow_user_id` (`user_id`),
     KEY `idx_borrow_status` (`status`),

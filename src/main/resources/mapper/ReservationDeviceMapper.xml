@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jhun.backend.mapper.ReservationDeviceMapper">
+
+    <!--
+        查询单条预约的设备关联。
+        当前阶段旧 controller/detail 仍只消费主设备兼容字段，但持久层必须先把完整关联顺序保留下来，
+        这样后续多设备读模型才能直接复用这里的顺序事实。
+    -->
+    <select id="findByReservationId" resultType="com.jhun.backend.entity.ReservationDevice">
+        SELECT id, reservation_id, device_id, device_order, created_at
+        FROM reservation_device
+        WHERE reservation_id = #{reservationId}
+        ORDER BY device_order ASC, created_at ASC
+    </select>
+
+    <!--
+        查找尚未完成 cutover 的历史预约。
+        这里故意只返回“旧列有 device_id、关联表仍为空”的记录，保证回填动作天然幂等。
+    -->
+    <select id="findLegacyReservationsWithoutRelation" resultType="com.jhun.backend.entity.ReservationDevice">
+        SELECT NULL AS id,
+               r.id AS reservation_id,
+               r.device_id AS device_id,
+               0 AS device_order,
+               NULL AS created_at
+        FROM reservation r
+        WHERE r.device_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM reservation_device rd
+              WHERE rd.reservation_id = r.id
+          )
+        ORDER BY r.created_at ASC, r.id ASC
+    </select>
+
+    <!-- 统计单条预约的设备关联数量，用于验证回填与 cutover 后的聚合完整性。 -->
+    <select id="countByReservationId" resultType="long">
+        SELECT COUNT(1)
+        FROM reservation_device
+        WHERE reservation_id = #{reservationId}
+    </select>
+</mapper>

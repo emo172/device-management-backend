@@ -111,9 +111,15 @@ class ReservationControllerIntegrationTest {
                                   "purpose": "课程演示",
                                   "remark": "第一条预约"
                                 }
-                                """.formatted(device.getId(), formatTime(startTime), formatTime(endTime))))
+                                 """.formatted(device.getId(), formatTime(startTime), formatTime(endTime))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("PENDING_DEVICE_APPROVAL"));
+                .andExpect(jsonPath("$.data.status").value("PENDING_DEVICE_APPROVAL"))
+                .andExpect(jsonPath("$.data.deviceCount").value(1))
+                .andExpect(jsonPath("$.data.primaryDeviceId").value(device.getId()))
+                .andExpect(jsonPath("$.data.primaryDeviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.primaryDeviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.devices.length()").value(1))
+                .andExpect(jsonPath("$.data.devices[0].deviceId").value(device.getId()));
     }
 
     /**
@@ -443,7 +449,13 @@ class ReservationControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.records[0].userId").value(currentUser.getId()))
-                .andExpect(jsonPath("$.data.records[0].deviceName").value(device.getName()));
+                .andExpect(jsonPath("$.data.records[0].deviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.records[0].deviceCount").value(1))
+                .andExpect(jsonPath("$.data.records[0].primaryDeviceId").value(device.getId()))
+                .andExpect(jsonPath("$.data.records[0].primaryDeviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.records[0].primaryDeviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.records[0].devices.length()").value(1))
+                .andExpect(jsonPath("$.data.records[0].devices[0].deviceId").value(device.getId()));
     }
 
     /**
@@ -639,13 +651,12 @@ class ReservationControllerIntegrationTest {
     }
 
     /**
-     * 验证如果只是预约关联数据漂移到脏设备引用，固定分页列表会落成 400 业务异常。
+     * 验证切到 `reservation_device` 真相源后，旧兼容列 `reservation.device_id` 即使漂移也不会再打坏列表读取。
      * <p>
-     * 这条用例的目的不是制造 dev 500，而是明确区分“后续装配发现坏关联”与“SQL/schema 级故障”两类入口，
-     * 避免把脏数据触发的业务异常误判成当前开发环境里的 500。
+     * 这条用例直接覆盖 cutover 目标：列表应继续从关联表恢复主设备信息，而不是把旧列当成当前真相后返回 400。
      */
     @Test
-    void shouldReturnBadRequestForAssociationDriftOnFixedPaging() throws Exception {
+    void shouldKeepReservationReadableWhenLegacyDeviceIdDriftsOnFixedPaging() throws Exception {
         User user = createUser("rsv-drift-u1", "reserve-drift-user-1@example.com", "USER");
         Device device = createDevice("DEVICE_ONLY");
         LocalDateTime startTime = futureTime(27, 9, 0);
@@ -659,10 +670,18 @@ class ReservationControllerIntegrationTest {
                             .header("Authorization", bearer(user, "USER"))
                             .param("page", "1")
                             .param("size", "5"))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message").value("设备不存在"));
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.total").value(1))
+                    .andExpect(jsonPath("$.data.records[0].id").value(reservationId))
+                    .andExpect(jsonPath("$.data.records[0].deviceId").value(device.getId()))
+                    .andExpect(jsonPath("$.data.records[0].deviceName").value(device.getName()))
+                    .andExpect(jsonPath("$.data.records[0].deviceNumber").value(device.getDeviceNumber()))
+                    .andExpect(jsonPath("$.data.records[0].deviceCount").value(1))
+                    .andExpect(jsonPath("$.data.records[0].primaryDeviceId").value(device.getId()))
+                    .andExpect(jsonPath("$.data.records[0].devices.length()").value(1))
+                    .andExpect(jsonPath("$.data.records[0].devices[0].deviceId").value(device.getId()));
         } finally {
-            jdbcTemplate.update("UPDATE reservation SET device_id = ? WHERE id = ?", device.getId(), reservationId);
+            jdbcTemplate.update("UPDATE reservation SET device_id = ? WHERE id = ?", null, reservationId);
             jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY TRUE");
         }
     }
@@ -689,6 +708,12 @@ class ReservationControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.deviceId").value(device.getId()))
                 .andExpect(jsonPath("$.data.deviceName").value(device.getName()))
                 .andExpect(jsonPath("$.data.deviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.deviceCount").value(1))
+                .andExpect(jsonPath("$.data.primaryDeviceId").value(device.getId()))
+                .andExpect(jsonPath("$.data.primaryDeviceName").value(device.getName()))
+                .andExpect(jsonPath("$.data.primaryDeviceNumber").value(device.getDeviceNumber()))
+                .andExpect(jsonPath("$.data.devices.length()").value(1))
+                .andExpect(jsonPath("$.data.devices[0].deviceId").value(device.getId()))
                 .andExpect(jsonPath("$.data.deviceStatus").value("AVAILABLE"))
                 .andExpect(jsonPath("$.data.approvalModeSnapshot").value("DEVICE_ONLY"));
     }

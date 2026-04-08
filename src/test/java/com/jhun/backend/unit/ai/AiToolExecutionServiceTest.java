@@ -17,6 +17,7 @@ import com.jhun.backend.dto.device.DevicePageResponse;
 import com.jhun.backend.dto.device.DeviceResponse;
 import com.jhun.backend.dto.device.DeviceStatusLogResponse;
 import com.jhun.backend.dto.reservation.ReservationDetailResponse;
+import com.jhun.backend.dto.reservation.ReservationDeviceSummaryResponse;
 import com.jhun.backend.dto.reservation.ReservationListItemResponse;
 import com.jhun.backend.dto.reservation.ReservationPageResponse;
 import com.jhun.backend.dto.reservation.ReservationResponse;
@@ -120,6 +121,11 @@ class AiToolExecutionServiceTest {
                                 "dev-1",
                                 "投影仪 A",
                                 "DEV-001",
+                                1,
+                                List.of(new ReservationDeviceSummaryResponse("dev-1", "投影仪 A", "DEV-001")),
+                                "dev-1",
+                                "投影仪 A",
+                                "DEV-001",
                                 LocalDateTime.of(2026, 4, 10, 9, 0),
                                 LocalDateTime.of(2026, 4, 10, 10, 0),
                                 "课程演示",
@@ -170,6 +176,11 @@ class AiToolExecutionServiceTest {
                         USER_ID,
                         "alice",
                         "SELF",
+                        "dev-1",
+                        "投影仪 A",
+                        "DEV-001",
+                        1,
+                        List.of(new ReservationDeviceSummaryResponse("dev-1", "投影仪 A", "DEV-001")),
                         "dev-1",
                         "投影仪 A",
                         "DEV-001",
@@ -234,6 +245,11 @@ class AiToolExecutionServiceTest {
                         USER_ID,
                         "alice",
                         "SELF",
+                        "dev-1",
+                        "投影仪 A",
+                        "DEV-001",
+                        1,
+                        List.of(new ReservationDeviceSummaryResponse("dev-1", "投影仪 A", "DEV-001")),
                         "dev-1",
                         "投影仪 A",
                         "DEV-001",

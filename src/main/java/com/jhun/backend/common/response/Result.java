@@ -45,6 +45,20 @@ public class Result<T> {
         return new Result<>(1, message, null);
     }
 
+    /**
+     * 构造携带失败数据的响应。
+     * <p>
+     * 新增该重载是为了兼容“HTTP 失败但仍需把结构化阻塞原因返回给前端”的场景，
+     * 例如多设备预约失败时返回 {@code blockingDevices[]}，同时不打破既有成功/失败三段式结构。
+     *
+     * @param message 失败原因
+     * @param data 失败时仍需返回的结构化数据
+     * @return 统一失败响应对象
+     */
+    public static <T> Result<T> error(String message, T data) {
+        return new Result<>(1, message, data);
+    }
+
     public int getCode() {
         return code;
     }

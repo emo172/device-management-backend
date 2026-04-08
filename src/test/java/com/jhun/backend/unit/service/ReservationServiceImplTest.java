@@ -79,7 +79,7 @@ class ReservationServiceImplTest {
         reservation.setSignStatus("NOT_CHECKED_IN");
         reservation.setStartTime(LocalDateTime.now().plusDays(2));
 
-        when(reservationMapper.selectById("reservation-1")).thenReturn(reservation);
+        when(reservationMapper.findAggregateById("reservation-1")).thenReturn(reservation);
         when(reservationMapper.cancelReservationSafely(anyString(), anyString(), any(), any(), any(), anyList()))
                 .thenReturn(0);
 

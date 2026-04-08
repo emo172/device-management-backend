@@ -2,7 +2,9 @@ package com.jhun.backend.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.jhun.backend.entity.Reservation;
+import com.jhun.backend.entity.ReservationDevice;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -29,6 +31,21 @@ public interface ReservationMapper extends BaseMapper<Reservation> {
      * 统计口径必须与列表查询保持一致，否则前端分页会出现总数与当前页不匹配的问题。
      */
     long countByConditions(@Param("userId") String userId);
+
+    /**
+     * 按聚合读模型查询单条预约。
+     * <p>
+     * 该方法会从 {@code reservation_device} 恢复主设备兼容字段，避免 cutover 后继续依赖旧列读取设备信息。
+     */
+    Reservation findAggregateById(@Param("reservationId") String reservationId);
+
+    /**
+     * 批量查询预约关联设备顺序。
+     * <p>
+     * T4 读模型扩展后，列表、详情与动作回包都要以这里返回的 `device_order` 顺序组装 `devices[]`
+     * 和主设备兼容字段，避免再次退回旧 `reservation.device_id` 真相。
+     */
+    List<ReservationDevice> findDeviceRelationsByReservationIds(@Param("reservationIds") Collection<String> reservationIds);
 
     List<Reservation> findConflictingReservations(
             @Param("deviceId") String deviceId,

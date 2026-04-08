@@ -6,7 +6,9 @@ import com.jhun.backend.dto.reservation.AuditReservationRequest;
 import com.jhun.backend.dto.reservation.CancelReservationRequest;
 import com.jhun.backend.dto.reservation.CheckInRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
+import com.jhun.backend.dto.reservation.CreateMultiReservationRequest;
 import com.jhun.backend.dto.reservation.ManualProcessRequest;
+import com.jhun.backend.dto.reservation.MultiReservationResponse;
 import com.jhun.backend.dto.reservation.ProxyReservationRequest;
 import com.jhun.backend.dto.reservation.ReservationDetailResponse;
 import com.jhun.backend.dto.reservation.ReservationPageResponse;
@@ -74,6 +76,19 @@ public class ReservationController {
             @AuthenticationPrincipal AuthUserPrincipal principal,
             @RequestBody CreateReservationRequest request) {
         return Result.success(reservationService.createReservation(principal.userId(), principal.userId(), request));
+    }
+
+    /**
+     * 创建多设备单预约。
+     * <p>
+     * 新接口与旧单设备入口并行存在：旧 {@code /api/reservations} 与 {@code /api/reservations/proxy} 契约保持不变，
+     * 多设备能力统一收口到这里，由服务层负责角色边界、整单原子性和设备级失败原因返回。
+     */
+    @PostMapping("/multi")
+    public Result<MultiReservationResponse> createMulti(
+            @AuthenticationPrincipal AuthUserPrincipal principal,
+            @RequestBody CreateMultiReservationRequest request) {
+        return Result.success(reservationService.createMultiReservation(principal.userId(), principal.role(), request));
     }
 
     /**

@@ -1,13 +1,19 @@
 package com.jhun.backend.service.impl;
 
 import com.jhun.backend.common.exception.BusinessException;
+import com.jhun.backend.common.exception.MultiReservationConflictException;
 import com.jhun.backend.dto.reservation.AuditReservationRequest;
+import com.jhun.backend.dto.reservation.BlockingDeviceResponse;
 import com.jhun.backend.dto.reservation.CancelReservationRequest;
 import com.jhun.backend.dto.reservation.CheckInRequest;
+import com.jhun.backend.dto.reservation.CreateMultiReservationRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
 import com.jhun.backend.dto.reservation.ManualProcessRequest;
+import com.jhun.backend.dto.reservation.MultiReservationConflictResponse;
+import com.jhun.backend.dto.reservation.MultiReservationResponse;
 import com.jhun.backend.dto.reservation.ProxyReservationRequest;
 import com.jhun.backend.dto.reservation.ReservationDetailResponse;
+import com.jhun.backend.dto.reservation.ReservationDeviceSummaryResponse;
 import com.jhun.backend.dto.reservation.ReservationListItemResponse;
 import com.jhun.backend.dto.reservation.ReservationPageResponse;
 import com.jhun.backend.dto.reservation.ReservationResponse;
@@ -15,6 +21,7 @@ import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceCategory;
 import com.jhun.backend.entity.NotificationRecord;
 import com.jhun.backend.entity.Reservation;
+import com.jhun.backend.entity.ReservationDevice;
 import com.jhun.backend.entity.Role;
 import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.DeviceCategoryMapper;
@@ -25,14 +32,21 @@ import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.ReservationService;
 import com.jhun.backend.service.support.reservation.ConflictDetector;
+import com.jhun.backend.service.support.reservation.ReservationDeviceBackfillSupport;
 import com.jhun.backend.service.support.reservation.ReservationValidator;
 import com.jhun.backend.util.UuidUtil;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import org.springframework.stereotype.Service;
@@ -60,6 +74,9 @@ public class ReservationServiceImpl implements ReservationService {
             "PENDING_MANUAL",
             "APPROVED");
 
+    /** 单次多设备预约允许选择的最大设备数。 */
+    private static final int MAX_MULTI_RESERVATION_DEVICE_COUNT = 10;
+
     private final ReservationMapper reservationMapper;
     private final DeviceMapper deviceMapper;
     private final DeviceCategoryMapper deviceCategoryMapper;
@@ -67,6 +84,7 @@ public class ReservationServiceImpl implements ReservationService {
     private final UserMapper userMapper;
     private final RoleMapper roleMapper;
     private final ReservationValidator reservationValidator;
+    private final ReservationDeviceBackfillSupport reservationDeviceBackfillSupport;
     private final ConflictDetector conflictDetector;
     private final TransactionTemplate transactionTemplate;
     private final Map<String, ReentrantLock> deviceLocks = new ConcurrentHashMap<>();
@@ -79,6 +97,7 @@ public class ReservationServiceImpl implements ReservationService {
             UserMapper userMapper,
             RoleMapper roleMapper,
             ReservationValidator reservationValidator,
+            ReservationDeviceBackfillSupport reservationDeviceBackfillSupport,
             ConflictDetector conflictDetector,
             TransactionTemplate transactionTemplate) {
         this.reservationMapper = reservationMapper;
@@ -88,6 +107,7 @@ public class ReservationServiceImpl implements ReservationService {
         this.userMapper = userMapper;
         this.roleMapper = roleMapper;
         this.reservationValidator = reservationValidator;
+        this.reservationDeviceBackfillSupport = reservationDeviceBackfillSupport;
         this.conflictDetector = conflictDetector;
         this.transactionTemplate = transactionTemplate;
     }
@@ -107,13 +127,19 @@ public class ReservationServiceImpl implements ReservationService {
         int offset = (safePage - 1) * safeSize;
         long total = reservationMapper.countByConditions(visibleUserId);
         List<Reservation> reservations = reservationMapper.findPageByConditions(visibleUserId, safeSize, offset);
-        Map<String, Device> deviceMap = loadDeviceMap(reservations.stream().map(Reservation::getDeviceId).toList());
+        Map<String, List<ReservationDevice>> relationMap = loadReservationDeviceRelationMap(
+                reservations.stream().map(Reservation::getId).toList());
+        Map<String, Device> deviceMap = loadDeviceMap(collectReadModelDeviceIds(reservations, relationMap));
         Map<String, User> userMap = loadUserMap(reservations.stream()
                 .flatMap(reservation -> java.util.stream.Stream.of(reservation.getUserId(), reservation.getCreatedBy()))
                 .filter(Objects::nonNull)
                 .toList());
         List<ReservationListItemResponse> records = reservations.stream()
-                .map(reservation -> toListItemResponse(reservation, deviceMap, userMap))
+                .map(reservation -> toListItemResponse(
+                        reservation,
+                        relationMap.getOrDefault(reservation.getId(), List.of()),
+                        deviceMap,
+                        userMap))
                 .toList();
         return new ReservationPageResponse(total, records);
     }
@@ -178,6 +204,83 @@ public class ReservationServiceImpl implements ReservationService {
     }
 
     /**
+     * 创建多设备单预约。
+     * <p>
+     * 该入口必须保持“整单原子”语义：
+     * 1) 先对请求形状、角色边界、设备存在性与静态可预约状态做整单校验；
+     * 2) 再按设备 ID 排序加锁，避免并发多设备请求交叉持锁导致死锁；
+     * 3) 最后在同一事务内完成冲突校验、reservation 主表写入和 reservation_device 多行写入。
+     * 任一设备失败都通过 409 + blockingDevices[] 返回，并且整单不留下任何半成品数据。
+     */
+    @Override
+    public MultiReservationResponse createMultiReservation(String operatorId, String operatorRole, CreateMultiReservationRequest request) {
+        reservationValidator.validateCreateTimeRange(request.startTime(), request.endTime());
+        List<String> requestedDeviceIds = normalizeRequestedDeviceIds(request.deviceIds());
+        if (requestedDeviceIds.isEmpty()) {
+            throw new BusinessException("预约设备不能为空");
+        }
+
+        Map<String, Device> requestedDeviceMap = loadDeviceMap(requestedDeviceIds);
+        throwIfMultiReservationBlocked("多设备预约参数校验失败", collectRequestShapeBlockingDevices(requestedDeviceIds, requestedDeviceMap));
+
+        MultiReservationContext context = resolveMultiReservationContext(operatorId, operatorRole, request, requestedDeviceIds, requestedDeviceMap);
+        List<String> orderedDeviceIds = requestedDeviceIds.stream().distinct().toList();
+        throwIfMultiReservationBlocked("所选设备当前不可预约", collectDeviceSnapshotBlockingDevices(orderedDeviceIds, requestedDeviceMap));
+
+        List<ReentrantLock> locks = acquireDeviceLocks(orderedDeviceIds);
+        try {
+            MultiReservationResponse response = transactionTemplate.execute(status -> {
+                List<BlockingDeviceResponse> conflictBlockingDevices = collectConflictBlockingDevices(
+                        orderedDeviceIds,
+                        requestedDeviceMap,
+                        request.startTime(),
+                        request.endTime());
+                throwIfMultiReservationBlocked("所选设备在当前时间段不可预约", conflictBlockingDevices);
+
+                Reservation reservation = new Reservation();
+                reservation.setId(UuidUtil.randomUuid());
+                reservation.setUserId(context.targetUserId());
+                reservation.setCreatedBy(operatorId);
+                reservation.setReservationMode(context.reservationMode());
+                reservation.setStartTime(request.startTime());
+                reservation.setEndTime(request.endTime());
+                reservation.setPurpose(request.purpose());
+                reservation.setRemark(request.remark());
+                reservation.setApprovalModeSnapshot(resolveAggregateApprovalMode(orderedDeviceIds, requestedDeviceMap));
+                reservation.setStatus("PENDING_DEVICE_APPROVAL");
+                reservation.setSignStatus("NOT_CHECKED_IN");
+                reservationMapper.insert(reservation);
+                reservationDeviceBackfillSupport.saveDeviceRelations(reservation.getId(), orderedDeviceIds);
+                saveNotification(
+                        context.targetUserId(),
+                        "FIRST_APPROVAL_TODO",
+                        "IN_APP",
+                        "预约待审批",
+                        "您的预约已提交，等待设备管理员审批",
+                        reservation.getId(),
+                        "RESERVATION");
+                if ("ON_BEHALF".equals(context.reservationMode())) {
+                    saveNotification(
+                            context.targetUserId(),
+                            "ON_BEHALF_CREATED",
+                            "IN_APP",
+                            "收到代预约",
+                            "系统管理员已为您创建预约，请及时查看审批进度",
+                            reservation.getId(),
+                            "RESERVATION");
+                }
+                return new MultiReservationResponse(toResponse(reservation), orderedDeviceIds.size());
+            });
+            if (response == null) {
+                throw new BusinessException("多设备预约创建失败");
+            }
+            return response;
+        } finally {
+            releaseDeviceLocks(locks);
+        }
+    }
+
+    /**
      * 按指定预约模式创建预约。
      * <p>
      * 这里是预约主链路的统一落库入口：负责冲突检测、审批模式快照、初始状态、站内通知和最终动作回包组装。
@@ -209,7 +312,6 @@ public class ReservationServiceImpl implements ReservationService {
                 reservation.setUserId(userId);
                 reservation.setCreatedBy(createdBy);
                 reservation.setReservationMode(reservationMode);
-                reservation.setDeviceId(device.getId());
                 reservation.setStartTime(request.startTime());
                 reservation.setEndTime(request.endTime());
                 reservation.setPurpose(request.purpose());
@@ -218,6 +320,7 @@ public class ReservationServiceImpl implements ReservationService {
                 reservation.setStatus(reservationValidator.resolveInitialStatus(device, category.getDefaultApprovalMode()));
                 reservation.setSignStatus("NOT_CHECKED_IN");
                 reservationMapper.insert(reservation);
+                reservationDeviceBackfillSupport.savePrimaryDeviceRelation(reservation.getId(), device.getId());
                 saveNotification(userId, "FIRST_APPROVAL_TODO", "IN_APP", "预约待审批", "您的预约已提交，等待设备管理员审批", reservation.getId(), "RESERVATION");
                 if ("ON_BEHALF".equals(reservationMode)) {
                     saveNotification(
@@ -439,7 +542,7 @@ public class ReservationServiceImpl implements ReservationService {
     }
 
     private Reservation mustFindReservation(String reservationId) {
-        Reservation reservation = reservationMapper.selectById(reservationId);
+        Reservation reservation = reservationMapper.findAggregateById(reservationId);
         if (reservation == null) {
             throw new BusinessException("预约不存在");
         }
@@ -472,6 +575,231 @@ public class ReservationServiceImpl implements ReservationService {
     }
 
     /**
+     * 统一整理多设备请求中的设备 ID。
+     * <p>
+     * 这里保留前端原始选择顺序，只做空白裁剪；真正的去重与上限校验仍交给后续阻塞原因收集逻辑，
+     * 这样失败响应才能精确告诉调用方“哪台设备因为重复/超限而阻塞整单提交”。
+     */
+    private List<String> normalizeRequestedDeviceIds(List<String> deviceIds) {
+        if (deviceIds == null) {
+            return List.of();
+        }
+        return deviceIds.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(deviceId -> !deviceId.isEmpty())
+                .toList();
+    }
+
+    /**
+     * 收集请求形状层面的阻塞设备。
+     * <p>
+     * 重复设备与超上限都属于“请求本身已经不合法”，必须先于数据库冲突检测拦住，
+     * 否则后端会在写事务里做无意义工作，还会让前端拿不到清晰的失败归因。
+     */
+    private List<BlockingDeviceResponse> collectRequestShapeBlockingDevices(
+            List<String> requestedDeviceIds,
+            Map<String, Device> requestedDeviceMap) {
+        Map<String, BlockingDeviceResponse> blockingDevices = new LinkedHashMap<>();
+        Set<String> seenDeviceIds = new HashSet<>();
+        int uniqueDeviceCount = 0;
+        for (String deviceId : requestedDeviceIds) {
+            if (!seenDeviceIds.add(deviceId)) {
+                blockingDevices.putIfAbsent(
+                        deviceId,
+                        buildBlockingDevice(
+                                deviceId,
+                                resolveDeviceName(deviceId, requestedDeviceMap),
+                                "DEVICE_DUPLICATED",
+                                "同一设备不能在单次多设备预约中重复选择"));
+                continue;
+            }
+            uniqueDeviceCount++;
+            if (uniqueDeviceCount > MAX_MULTI_RESERVATION_DEVICE_COUNT) {
+                blockingDevices.putIfAbsent(
+                        deviceId,
+                        buildBlockingDevice(
+                                deviceId,
+                                resolveDeviceName(deviceId, requestedDeviceMap),
+                                "DEVICE_LIMIT_EXCEEDED",
+                                "单次预约最多只能选择 10 台设备"));
+            }
+        }
+        return List.copyOf(blockingDevices.values());
+    }
+
+    /**
+     * 收集设备快照层面的阻塞原因。
+     * <p>
+     * 该阶段只判断“设备现在是否值得继续进入事务”：
+     * 设备不存在直接报 `DEVICE_NOT_FOUND`，设备状态不是 AVAILABLE 则报 `DEVICE_NOT_RESERVABLE`。
+     */
+    private List<BlockingDeviceResponse> collectDeviceSnapshotBlockingDevices(
+            List<String> orderedDeviceIds,
+            Map<String, Device> requestedDeviceMap) {
+        List<BlockingDeviceResponse> blockingDevices = new ArrayList<>();
+        for (String deviceId : orderedDeviceIds) {
+            Device device = requestedDeviceMap.get(deviceId);
+            if (device == null) {
+                blockingDevices.add(buildBlockingDevice(deviceId, null, "DEVICE_NOT_FOUND", "设备不存在"));
+                continue;
+            }
+            if (!"AVAILABLE".equals(device.getStatus())) {
+                blockingDevices.add(buildBlockingDevice(deviceId, device.getName(), "DEVICE_NOT_RESERVABLE", "设备当前状态不可预约"));
+            }
+        }
+        return blockingDevices;
+    }
+
+    /**
+     * 收集时间冲突导致的阻塞设备。
+     * <p>
+     * 该校验必须放在按设备加锁之后、事务写入之前执行：
+     * 只有这样才能让并发请求在同一把应用层锁保护下串行检查数据库事实，避免整单出现 partial success。
+     */
+    private List<BlockingDeviceResponse> collectConflictBlockingDevices(
+            List<String> orderedDeviceIds,
+            Map<String, Device> requestedDeviceMap,
+            LocalDateTime startTime,
+            LocalDateTime endTime) {
+        List<BlockingDeviceResponse> blockingDevices = new ArrayList<>();
+        for (String deviceId : orderedDeviceIds) {
+            List<Reservation> conflicts = reservationMapper.findConflictingReservations(deviceId, startTime, endTime);
+            if (conflictDetector.hasConflict(conflicts, startTime, endTime)) {
+                blockingDevices.add(buildBlockingDevice(
+                        deviceId,
+                        resolveDeviceName(deviceId, requestedDeviceMap),
+                        "DEVICE_TIME_CONFLICT",
+                        "设备在当前时间段已存在有效预约"));
+            }
+        }
+        return blockingDevices;
+    }
+
+    /**
+     * 解析多设备预约的角色上下文。
+     * <p>
+     * 多设备接口兼容“普通用户为自己预约”和“系统管理员代 USER 预约”两类场景；
+     * 不允许设备管理员创建预约，也不允许普通用户借由 targetUserId 把自己伪装成代预约操作人。
+     */
+    private MultiReservationContext resolveMultiReservationContext(
+            String operatorId,
+            String operatorRole,
+            CreateMultiReservationRequest request,
+            List<String> requestedDeviceIds,
+            Map<String, Device> requestedDeviceMap) {
+        if ("DEVICE_ADMIN".equals(operatorRole)) {
+            throwMultiReservationConflict(
+                    "当前角色不能创建多设备预约",
+                    buildPermissionDeniedBlockingDevices(requestedDeviceIds, requestedDeviceMap, "设备管理员不能创建多设备预约"));
+        }
+        if ("USER".equals(operatorRole)) {
+            if (request.targetUserId() != null && !request.targetUserId().isBlank() && !operatorId.equals(request.targetUserId())) {
+                throwMultiReservationConflict(
+                        "当前角色不能创建多设备预约",
+                        buildPermissionDeniedBlockingDevices(requestedDeviceIds, requestedDeviceMap, "普通用户只能为自己创建多设备预约"));
+            }
+            return new MultiReservationContext(operatorId, "SELF");
+        }
+        if (!"SYSTEM_ADMIN".equals(operatorRole)) {
+            throwMultiReservationConflict(
+                    "当前角色不能创建多设备预约",
+                    buildPermissionDeniedBlockingDevices(requestedDeviceIds, requestedDeviceMap, "当前角色不能创建多设备预约"));
+        }
+        if (request.targetUserId() == null || request.targetUserId().isBlank()) {
+            throwMultiReservationConflict(
+                    "当前角色不能创建多设备预约",
+                    buildPermissionDeniedBlockingDevices(requestedDeviceIds, requestedDeviceMap, "系统管理员发起多设备预约时必须指定目标用户"));
+        }
+        User targetUser = mustFindUser(request.targetUserId());
+        Role targetRole = roleMapper.selectById(targetUser.getRoleId());
+        if (targetRole == null || !"USER".equals(targetRole.getName())) {
+            throw new BusinessException("系统管理员仅可代 USER 预约");
+        }
+        return new MultiReservationContext(targetUser.getId(), operatorId.equals(targetUser.getId()) ? "SELF" : "ON_BEHALF");
+    }
+
+    /**
+     * 生成权限不足时的整单阻塞设备列表。
+     * <p>
+     * 权限问题虽然本质上是“调用人不能提交这张整单”，
+     * 但前端失败面板仍以设备维度展示原因，因此这里把当前请求中的每台设备都标成 `DEVICE_PERMISSION_DENIED`。
+     */
+    private List<BlockingDeviceResponse> buildPermissionDeniedBlockingDevices(
+            List<String> requestedDeviceIds,
+            Map<String, Device> requestedDeviceMap,
+            String reasonMessage) {
+        Map<String, BlockingDeviceResponse> blockingDevices = new LinkedHashMap<>();
+        for (String deviceId : requestedDeviceIds) {
+            blockingDevices.putIfAbsent(
+                    deviceId,
+                    buildBlockingDevice(
+                            deviceId,
+                            resolveDeviceName(deviceId, requestedDeviceMap),
+                            "DEVICE_PERMISSION_DENIED",
+                            reasonMessage));
+        }
+        return List.copyOf(blockingDevices.values());
+    }
+
+    /**
+     * 解析整单审批模式快照。
+     * <p>
+     * 多设备预约只有一条 reservation 主记录，因此审批模式快照必须在整单维度收敛成一个值；
+     * 这里取“最严格优先”策略：只要任一设备要求 `DEVICE_THEN_SYSTEM`，整单就按双审批处理，避免把更严格的审批设备错误降级。
+     */
+    private String resolveAggregateApprovalMode(List<String> orderedDeviceIds, Map<String, Device> requestedDeviceMap) {
+        for (String deviceId : orderedDeviceIds) {
+            Device device = mustFindMappedValue(requestedDeviceMap, deviceId, "设备不存在");
+            DeviceCategory category = mustFindCategory(device.getCategoryId());
+            String approvalMode = reservationValidator.resolveApprovalMode(device, category.getDefaultApprovalMode());
+            if ("DEVICE_THEN_SYSTEM".equals(approvalMode)) {
+                return "DEVICE_THEN_SYSTEM";
+            }
+        }
+        return "DEVICE_ONLY";
+    }
+
+    private List<ReentrantLock> acquireDeviceLocks(List<String> orderedDeviceIds) {
+        List<String> sortedDeviceIds = new ArrayList<>(orderedDeviceIds);
+        sortedDeviceIds.sort(Comparator.naturalOrder());
+        List<ReentrantLock> locks = new ArrayList<>(sortedDeviceIds.size());
+        for (String deviceId : sortedDeviceIds) {
+            ReentrantLock lock = deviceLocks.computeIfAbsent(deviceId, key -> new ReentrantLock());
+            lock.lock();
+            locks.add(lock);
+        }
+        return locks;
+    }
+
+    private void releaseDeviceLocks(List<ReentrantLock> locks) {
+        List<ReentrantLock> reversedLocks = new ArrayList<>(locks);
+        Collections.reverse(reversedLocks);
+        for (ReentrantLock lock : reversedLocks) {
+            lock.unlock();
+        }
+    }
+
+    private void throwIfMultiReservationBlocked(String message, List<BlockingDeviceResponse> blockingDevices) {
+        if (!blockingDevices.isEmpty()) {
+            throwMultiReservationConflict(message, blockingDevices);
+        }
+    }
+
+    private void throwMultiReservationConflict(String message, List<BlockingDeviceResponse> blockingDevices) {
+        throw new MultiReservationConflictException(message, new MultiReservationConflictResponse(List.copyOf(blockingDevices)));
+    }
+
+    private BlockingDeviceResponse buildBlockingDevice(String deviceId, String deviceName, String reasonCode, String reasonMessage) {
+        return new BlockingDeviceResponse(deviceId, deviceName, reasonCode, reasonMessage);
+    }
+
+    private String resolveDeviceName(String deviceId, Map<String, Device> requestedDeviceMap) {
+        Device device = requestedDeviceMap.get(deviceId);
+        return device == null ? null : device.getName();
+    }
+
+    /**
      * 统一把动作型接口的返回值提升为“可直接继续渲染页面”的 workflow context。
      * <p>
      * 创建、一审、二审、签到和人工处理都可能改变审批人、签到时间、取消信息或设备关联字段；
@@ -495,6 +823,11 @@ public class ReservationServiceImpl implements ReservationService {
                 detailResponse.deviceId(),
                 detailResponse.deviceName(),
                 detailResponse.deviceNumber(),
+                detailResponse.deviceCount(),
+                detailResponse.devices(),
+                detailResponse.primaryDeviceId(),
+                detailResponse.primaryDeviceName(),
+                detailResponse.primaryDeviceNumber(),
                 detailResponse.deviceStatus(),
                 detailResponse.startTime(),
                 detailResponse.endTime(),
@@ -526,9 +859,11 @@ public class ReservationServiceImpl implements ReservationService {
      */
     private ReservationListItemResponse toListItemResponse(
             Reservation reservation,
+            List<ReservationDevice> relations,
             Map<String, Device> deviceMap,
             Map<String, User> userMap) {
-        Device device = mustFindMappedValue(deviceMap, reservation.getDeviceId(), "设备不存在");
+        List<ReservationDeviceSummaryResponse> devices = buildReservationDevices(reservation, relations, deviceMap);
+        ReservationDeviceSummaryResponse primaryDevice = mustResolvePrimaryDevice(devices);
         User owner = mustFindMappedValue(userMap, reservation.getUserId(), "目标用户不存在");
         User creator = mustFindMappedValue(userMap, reservation.getCreatedBy(), "目标用户不存在");
         return new ReservationListItemResponse(
@@ -539,9 +874,14 @@ public class ReservationServiceImpl implements ReservationService {
                 reservation.getCreatedBy(),
                 creator.getUsername(),
                 reservation.getReservationMode(),
-                reservation.getDeviceId(),
-                device.getName(),
-                device.getDeviceNumber(),
+                primaryDevice.deviceId(),
+                primaryDevice.deviceName(),
+                primaryDevice.deviceNumber(),
+                devices.size(),
+                devices,
+                primaryDevice.deviceId(),
+                primaryDevice.deviceName(),
+                primaryDevice.deviceNumber(),
                 reservation.getStartTime(),
                 reservation.getEndTime(),
                 reservation.getPurpose(),
@@ -558,7 +898,14 @@ public class ReservationServiceImpl implements ReservationService {
      * 详情页除了列表字段外，还要带上审批人、审批备注与设备当前状态，便于前端在单接口内完成联调。
      */
     private ReservationDetailResponse toDetailResponse(Reservation reservation) {
-        Device device = mustFindDevice(reservation.getDeviceId());
+        Map<String, List<ReservationDevice>> relationMap = loadReservationDeviceRelationMap(List.of(reservation.getId()));
+        Map<String, Device> deviceMap = loadDeviceMap(collectReadModelDeviceIds(List.of(reservation), relationMap));
+        List<ReservationDeviceSummaryResponse> devices = buildReservationDevices(
+                reservation,
+                relationMap.getOrDefault(reservation.getId(), List.of()),
+                deviceMap);
+        ReservationDeviceSummaryResponse primaryDevice = mustResolvePrimaryDevice(devices);
+        Device device = mustFindMappedValue(deviceMap, primaryDevice.deviceId(), "设备不存在");
         User owner = mustFindUser(reservation.getUserId());
         User creator = mustFindUser(reservation.getCreatedBy());
         User deviceApprover = findUser(reservation.getDeviceApproverId());
@@ -571,9 +918,14 @@ public class ReservationServiceImpl implements ReservationService {
                 reservation.getCreatedBy(),
                 creator.getUsername(),
                 reservation.getReservationMode(),
-                reservation.getDeviceId(),
-                device.getName(),
-                device.getDeviceNumber(),
+                primaryDevice.deviceId(),
+                primaryDevice.deviceName(),
+                primaryDevice.deviceNumber(),
+                devices.size(),
+                devices,
+                primaryDevice.deviceId(),
+                primaryDevice.deviceName(),
+                primaryDevice.deviceNumber(),
                 device.getStatus(),
                 reservation.getStartTime(),
                 reservation.getEndTime(),
@@ -663,6 +1015,68 @@ public class ReservationServiceImpl implements ReservationService {
         return userId == null ? null : userMapper.selectById(userId);
     }
 
+    private Map<String, List<ReservationDevice>> loadReservationDeviceRelationMap(Collection<String> reservationIds) {
+        Map<String, List<ReservationDevice>> relationMap = new LinkedHashMap<>();
+        List<String> uniqueIds = reservationIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (uniqueIds.isEmpty()) {
+            return relationMap;
+        }
+        for (ReservationDevice relation : reservationMapper.findDeviceRelationsByReservationIds(uniqueIds)) {
+            relationMap.computeIfAbsent(relation.getReservationId(), key -> new ArrayList<>()).add(relation);
+        }
+        return relationMap;
+    }
+
+    private List<String> collectReadModelDeviceIds(
+            Collection<Reservation> reservations,
+            Map<String, List<ReservationDevice>> relationMap) {
+        List<String> deviceIds = new ArrayList<>();
+        for (Reservation reservation : reservations) {
+            List<ReservationDevice> relations = relationMap.getOrDefault(reservation.getId(), List.of());
+            if (!relations.isEmpty()) {
+                relations.stream()
+                        .map(ReservationDevice::getDeviceId)
+                        .filter(Objects::nonNull)
+                        .forEach(deviceIds::add);
+                continue;
+            }
+            if (reservation.getDeviceId() != null) {
+                deviceIds.add(reservation.getDeviceId());
+            }
+        }
+        return deviceIds;
+    }
+
+    private List<ReservationDeviceSummaryResponse> buildReservationDevices(
+            Reservation reservation,
+            List<ReservationDevice> relations,
+            Map<String, Device> deviceMap) {
+        if (!relations.isEmpty()) {
+            List<ReservationDeviceSummaryResponse> devices = new ArrayList<>();
+            for (ReservationDevice relation : relations) {
+                Device device = mustFindMappedValue(deviceMap, relation.getDeviceId(), "设备不存在");
+                devices.add(toReservationDeviceSummary(device));
+            }
+            return List.copyOf(devices);
+        }
+        if (reservation.getDeviceId() == null) {
+            return List.of();
+        }
+        Device fallbackDevice = mustFindMappedValue(deviceMap, reservation.getDeviceId(), "设备不存在");
+        return List.of(toReservationDeviceSummary(fallbackDevice));
+    }
+
+    private ReservationDeviceSummaryResponse mustResolvePrimaryDevice(List<ReservationDeviceSummaryResponse> devices) {
+        if (devices.isEmpty()) {
+            throw new BusinessException("预约未关联设备");
+        }
+        return devices.getFirst();
+    }
+
+    private ReservationDeviceSummaryResponse toReservationDeviceSummary(Device device) {
+        return new ReservationDeviceSummaryResponse(device.getId(), device.getName(), device.getDeviceNumber());
+    }
+
     /**
      * 批量加载设备映射。
      * <p>
@@ -721,5 +1135,8 @@ public class ReservationServiceImpl implements ReservationService {
         record.setRelatedId(relatedId);
         record.setRelatedType(relatedType);
         notificationRecordMapper.insert(record);
+    }
+
+    private record MultiReservationContext(String targetUserId, String reservationMode) {
     }
 }

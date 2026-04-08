@@ -4,7 +4,9 @@ import com.jhun.backend.dto.reservation.AuditReservationRequest;
 import com.jhun.backend.dto.reservation.CancelReservationRequest;
 import com.jhun.backend.dto.reservation.CheckInRequest;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
+import com.jhun.backend.dto.reservation.CreateMultiReservationRequest;
 import com.jhun.backend.dto.reservation.ManualProcessRequest;
+import com.jhun.backend.dto.reservation.MultiReservationResponse;
 import com.jhun.backend.dto.reservation.ReservationDetailResponse;
 import com.jhun.backend.dto.reservation.ReservationPageResponse;
 import com.jhun.backend.dto.reservation.ProxyReservationRequest;
@@ -37,6 +39,14 @@ public interface ReservationService {
     ReservationDetailResponse cancelReservation(String reservationId, String operatorId, String role, CancelReservationRequest request);
 
     ReservationResponse createReservation(String userId, String createdBy, CreateReservationRequest request);
+
+    /**
+     * 创建多设备单预约。
+     * <p>
+     * 新接口要求在单事务中完成整单校验与写入，任一设备失败都必须回滚整单，
+     * 并把阻塞设备清单通过 409 失败响应返回给调用方。
+     */
+    MultiReservationResponse createMultiReservation(String operatorId, String operatorRole, CreateMultiReservationRequest request);
 
     ReservationResponse createReservationWithMode(
             String userId,
