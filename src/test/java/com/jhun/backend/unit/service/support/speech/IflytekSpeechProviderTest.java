@@ -118,6 +118,32 @@ class IflytekSpeechProviderTest {
     }
 
     @Test
+    void shouldTreatBlankProviderAsDefaultIflytekSelection() {
+        SpeechProperties speechProperties = createSpeechProperties();
+        speechProperties.setProvider("   ");
+        IflytekSpeechWebSocketClient iflytekSpeechWebSocketClient = mock(IflytekSpeechWebSocketClient.class);
+        IflytekSpeechProvider provider = new IflytekSpeechProvider(speechProperties, iflytekSpeechWebSocketClient);
+        SpeechTranscriptionRequest request = new SpeechTranscriptionRequest(
+                "fake-pcm".getBytes(StandardCharsets.UTF_8),
+                WavPcmAudioParser.PROVIDER_PCM_CONTENT_TYPE,
+                "zh-CN");
+        SpeechTranscriptionResult expected = new SpeechTranscriptionResult(
+                "帮我预约明天下午两点的会议室",
+                "zh-CN",
+                IflytekSpeechProvider.IFLYTEK_PROVIDER);
+        when(iflytekSpeechWebSocketClient.transcribe(any(), eq(request), eq(IflytekSpeechProvider.IFLYTEK_PROVIDER)))
+                .thenReturn(expected);
+
+        SpeechTranscriptionResult result = provider.transcribe(request);
+
+        assertThat(result).isEqualTo(expected);
+        verify(iflytekSpeechWebSocketClient).transcribe(
+                speechProperties.getIflytek(),
+                request,
+                IflytekSpeechProvider.IFLYTEK_PROVIDER);
+    }
+
+    @Test
     void shouldRejectIncompleteIflytekCredentials() {
         SpeechProperties speechProperties = new SpeechProperties();
         speechProperties.setProvider(IflytekSpeechProvider.IFLYTEK_PROVIDER);

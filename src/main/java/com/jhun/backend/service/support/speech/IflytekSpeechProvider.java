@@ -2,7 +2,6 @@ package com.jhun.backend.service.support.speech;
 
 import com.jhun.backend.config.speech.SpeechProperties;
 import java.util.Objects;
-import org.springframework.util.StringUtils;
 
 public class IflytekSpeechProvider implements SpeechProvider {
 
@@ -43,17 +42,13 @@ public class IflytekSpeechProvider implements SpeechProvider {
     }
 
     private void validateIflytekProviderSelected() {
-        if (!IFLYTEK_PROVIDER.equalsIgnoreCase(speechProperties.getProvider())) {
+        if (!speechProperties.isIflytekProviderSelected()) {
             throw new SpeechProviderException("当前仅支持 Iflytek Speech provider");
         }
     }
 
     private void validateIflytekCredentialsConfigured() {
-        SpeechProperties.IflytekProperties iflytekProperties = speechProperties.getIflytek();
-        if (iflytekProperties == null
-                || !StringUtils.hasText(iflytekProperties.getAppId())
-                || !StringUtils.hasText(iflytekProperties.getApiKey())
-                || !StringUtils.hasText(iflytekProperties.getApiSecret())) {
+        if (!speechProperties.hasIflytekCredentialsConfigured()) {
             throw new SpeechProviderException(
                     "讯飞语音配置不完整，请检查 speech.iflytek.app-id / speech.iflytek.api-key / speech.iflytek.api-secret");
         }
