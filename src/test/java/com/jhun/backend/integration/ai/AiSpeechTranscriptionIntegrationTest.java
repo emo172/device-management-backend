@@ -1,6 +1,8 @@
 package com.jhun.backend.integration.ai;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -10,16 +12,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jhun.backend.config.security.JwtTokenProvider;
+import com.jhun.backend.config.speech.SpeechProperties;
 import com.jhun.backend.entity.Role;
 import com.jhun.backend.entity.User;
+import com.jhun.backend.integration.ai.support.WavTestFixtures;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
+import com.jhun.backend.service.support.speech.IflytekSpeechProvider;
+import com.jhun.backend.service.support.speech.IflytekSpeechWebSocketClient;
 import com.jhun.backend.service.support.speech.SpeechContract;
-import com.jhun.backend.service.support.speech.SpeechProvider;
 import com.jhun.backend.service.support.speech.SpeechTranscriptionRequest;
 import com.jhun.backend.service.support.speech.SpeechTranscriptionResult;
+import com.jhun.backend.service.support.speech.WavPcmAudioParser;
 import com.jhun.backend.util.UuidUtil;
-import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -37,13 +42,22 @@ import org.springframework.web.context.WebApplicationContext;
 /**
  * AI 语音转写接口集成测试。
  * <p>
- * 该测试锁定 task 2 的成功链路：认证用户上传浏览器协商出的 Ogg/Opus 录音后，
- * 后端会把音频字节、内容类型和固定中文 locale 交给独立 speech provider，并回传稳定响应结构。
+ * 该测试锁定 task 6 的正式成功链路：认证用户上传合法 PCM-WAV 后，
+ * 后端会先剥离 WAV 头为裸 PCM，再走 `IflytekSpeechProvider -> IflytekSpeechWebSocketClient`，
+ * 最终返回固定 `provider=iflytek` 的公共响应，而不是回退旧 Azure 路径或透出内部 provider 名称。
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@TestPropertySource(properties = "speech.enabled=true")
+@TestPropertySource(properties = {
+        "speech.enabled=true",
+        "speech.provider=iflytek",
+        "speech.iflytek.app-id=test-app-id",
+        "speech.iflytek.api-key=test-api-key",
+        "speech.iflytek.api-secret=test-api-secret"
+})
 class AiSpeechTranscriptionIntegrationTest {
+
+    private static final String MOCK_CLIENT_PROVIDER = "mock-client-provider";
 
     @Autowired
     private WebApplicationContext webApplicationContext;
@@ -61,7 +75,7 @@ class AiSpeechTranscriptionIntegrationTest {
     private JwtTokenProvider jwtTokenProvider;
 
     @MockitoBean
-    private SpeechProvider speechProvider;
+    private IflytekSpeechWebSocketClient iflytekSpeechWebSocketClient;
 
     private MockMvc mockMvc;
 
@@ -73,23 +87,26 @@ class AiSpeechTranscriptionIntegrationTest {
     }
 
     /**
-     * 验证普通用户可以上传受支持的 Ogg/Opus 录音并拿到固定 locale 的转写结果。
+     * 验证普通用户可以上传受支持的 PCM-WAV 录音并拿到固定 locale 的转写结果。
      * <p>
-     * 这里故意把 multipart 头写成 `audio/ogg; codecs=opus`，
-     * 以防服务层再次退化成对空白差异不兼容的字符串硬匹配。
+     * 这里故意把 multipart 头写成 `audio/x-wav`，
+     * 以防服务层再次退化成只认 `audio/wav` 单一字面量，错拒等价 WAV 变体。
      */
     @Test
-    void shouldTranscribeOggAudioForAuthenticatedUser() throws Exception {
+    void shouldTranscribePcmWavForAuthenticatedUser() throws Exception {
         User user = createUser("speech-tx-user", "speech-transcribe-user@example.com", "USER");
+        byte[] wavBytes = WavTestFixtures.validMono16Bit16KhzWav(3200);
+        byte[] expectedPcmBytes = new byte[wavBytes.length - 44];
+        System.arraycopy(wavBytes, 44, expectedPcmBytes, 0, expectedPcmBytes.length);
         MockMultipartFile file = new MockMultipartFile(
                 "file",
-                "voice.ogg",
-                "audio/ogg; codecs=opus",
-                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8));
-        when(speechProvider.transcribe(any())).thenReturn(new SpeechTranscriptionResult(
+                "voice.wav",
+                "audio/x-wav",
+                wavBytes);
+        when(iflytekSpeechWebSocketClient.transcribe(any(), any(), any())).thenReturn(new SpeechTranscriptionResult(
                 "帮我预约明天下午两点的会议室",
                 SpeechContract.LOCALE_ZH_CN,
-                SpeechContract.PROVIDER_AZURE));
+                MOCK_CLIENT_PROVIDER));
 
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(file)
@@ -97,12 +114,21 @@ class AiSpeechTranscriptionIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.transcript").value("帮我预约明天下午两点的会议室"))
                 .andExpect(jsonPath("$.data.locale").value(SpeechContract.LOCALE_ZH_CN))
-                .andExpect(jsonPath("$.data.provider").value(SpeechContract.PROVIDER_AZURE));
+                .andExpect(jsonPath("$.data.provider").value(IflytekSpeechProvider.IFLYTEK_PROVIDER));
 
         ArgumentCaptor<SpeechTranscriptionRequest> requestCaptor = ArgumentCaptor.forClass(SpeechTranscriptionRequest.class);
-        verify(speechProvider).transcribe(requestCaptor.capture());
-        assertEquals("audio/ogg;codecs=opus", requestCaptor.getValue().contentType());
+        ArgumentCaptor<String> providerCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<SpeechProperties.IflytekProperties> configCaptor = ArgumentCaptor.forClass(SpeechProperties.IflytekProperties.class);
+        verify(iflytekSpeechWebSocketClient).transcribe(
+                configCaptor.capture(),
+                requestCaptor.capture(),
+                providerCaptor.capture());
+        assertEquals(WavPcmAudioParser.PROVIDER_PCM_CONTENT_TYPE, requestCaptor.getValue().contentType());
         assertEquals(SpeechContract.LOCALE_ZH_CN, requestCaptor.getValue().locale());
+        assertArrayEquals(expectedPcmBytes, requestCaptor.getValue().audioBytes());
+        assertTrue(requestCaptor.getValue().audioBytes().length < wavBytes.length);
+        assertEquals("test-app-id", configCaptor.getValue().getAppId());
+        assertEquals(IflytekSpeechProvider.IFLYTEK_PROVIDER, providerCaptor.getValue());
     }
 
     /**
@@ -111,11 +137,11 @@ class AiSpeechTranscriptionIntegrationTest {
     @Test
     void shouldRejectUnauthenticatedTranscriptionRequest() throws Exception {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
-                        .file(new MockMultipartFile(
+                .file(new MockMultipartFile(
                                 "file",
-                                "voice.ogg",
-                                "audio/ogg",
-                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8))))
+                                "voice.wav",
+                                "audio/wav",
+                                WavTestFixtures.validMono16Bit16KhzWav(1600))))
                 .andExpect(status().isUnauthorized());
     }
 

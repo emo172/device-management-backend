@@ -79,23 +79,26 @@ ai:
     # 默认模型骨架指向 qwen-plus，后续环境可按部署要求覆盖。
     model: ${AI_QWEN_MODEL:qwen-plus}
     # API Key 只能通过环境变量或外部配置注入，仓库内不落真实密钥。
-    api-key: ${DASHSCOPE_API_KEY:}
+    api-key: ${AI_QWEN_API_KEY:${DASHSCOPE_API_KEY:}}
     # 首发范围内最多允许 1 次工具调用；当前任务先只完成配置接线，不提前实现工具执行链路。
     max-tool-calls: ${AI_QWEN_MAX_TOOL_CALLS:1}
 
 speech:
-  # `speech.enabled` 是语音总开关；关闭时前后端都应优雅回退到文字聊天与历史查看，不触发第三方云语音调用。
+  # `speech.enabled` 只表示语音输入转写入口是否可用；关闭时前后端都应优雅回退到文字聊天与历史查看，
+  # 不把旧播放链路、语音输出或供应商细节继续绑定到 capabilities 公共语义。
   enabled: false
-  # v1 只允许 Azure Speech provider，避免配置层给出多供应商已可切换的假象。
-  provider: azure
-  # 浏览器录音大小上限，与服务层二次校验保持一致，确保超限时返回稳定业务错误。
+  provider: iflytek
+  # 正式上传合同已冻结为 `audio/wav`（16k / 16bit / 单声道 PCM）且单次录音 60 秒内；
+  # 这里保留文件大小上限，用来在服务层稳定返回超限错误。
   max-upload-size-bytes: 10485760
-  azure:
-    # Azure Speech 真实凭据必须通过外部环境变量注入，仓库内只保留占位；上线前仍需完成第三方云语音合规审批。
-    region: ${SPEECH_AZURE_REGION:}
-    key: ${SPEECH_AZURE_KEY:}
+  iflytek:
+    # APPID / APIKey / APISecret 只在后端持有，用于代签名访问讯飞 WebSocket；
+    # 一期不接入 `res_id` 热词，也不允许前端感知第三方凭据。
+    app-id: ${SPEECH_IFLYTEK_APP_ID:}
+    api-key: ${SPEECH_IFLYTEK_API_KEY:}
+    api-secret: ${SPEECH_IFLYTEK_API_SECRET:}
 
 app:
   cors:
     # 使用逗号分隔的白名单源，供 WebMvc 与 Security 共享同一跨域真相源。
-    allowed-origins: http://localhost:3000,http://localhost:5173
+    allowed-origins: http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174

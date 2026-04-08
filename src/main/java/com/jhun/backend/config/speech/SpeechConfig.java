@@ -1,23 +1,31 @@
 package com.jhun.backend.config.speech;
 
+import com.jhun.backend.service.support.speech.IflytekSpeechProvider;
+import com.jhun.backend.service.support.speech.IflytekSpeechWebSocketClient;
+import com.jhun.backend.service.support.speech.SpeechProvider;
 import jakarta.servlet.MultipartConfigElement;
 import org.springframework.boot.servlet.MultipartConfigFactory;
 import org.springframework.boot.servlet.autoconfigure.MultipartProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.util.unit.DataSize;
 
-/**
- * 语音配置注册。
- * <p>
- * 当前仓库的语音能力已经固定为 Azure Speech 后端接入；
- * 这里继续只负责注册 {@link SpeechProperties}，让控制层、服务层与 Azure provider 共享同一配置真相源，
- * 避免凭据键名、功能开关和 provider 选择语义在多个位置各自漂移。
- */
 @Configuration
 @EnableConfigurationProperties(SpeechProperties.class)
 public class SpeechConfig {
+
+    @Bean
+    @ConditionalOnProperty(prefix = "speech", name = "enabled", havingValue = "true")
+    public SpeechProvider speechProvider(
+            SpeechProperties speechProperties,
+            IflytekSpeechWebSocketClient iflytekSpeechWebSocketClient) {
+        if (!speechProperties.isIflytekProviderSelected()) {
+            throw new IllegalStateException("当前仅支持 Iflytek 语音 provider：" + speechProperties.getProvider());
+        }
+        return new IflytekSpeechProvider(speechProperties, iflytekSpeechWebSocketClient);
+    }
 
     /**
      * 将语音上传上限同步到 servlet multipart 解析器。
@@ -52,4 +60,5 @@ public class SpeechConfig {
         }
         return left.toBytes() >= right.toBytes() ? left : right;
     }
+
 }

@@ -101,6 +101,42 @@ class AuthControllerIntegrationTest {
     }
 
     /**
+     * 验证本地浏览器从 `127.0.0.1` 发起登录时不会被默认跨域白名单误伤。
+     * <p>
+     * 真实联调里前端开发服务器可能因为端口占用切到 `5174`，浏览器仍会携带 `Origin`，
+     * 因此这里直接用登录接口锁住 `127.0.0.1` + Vite 常用端口的跨域放行语义，防止 `/ai` 页面在进入认证前就被 403 拦截。
+     */
+    @Test
+    void shouldAllowLoginRequestFromLoopbackViteOrigin() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "username": "cors-login-user",
+                                  "password": "Password123!",
+                                  "email": "cors-login-user@example.com",
+                                  "realName": "跨域登录用户",
+                                  "phone": "13800138018"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/auth/login")
+                        .header("Origin", "http://127.0.0.1:5174")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "account": "cors-login-user",
+                                  "password": "Password123!"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.role").value("USER"))
+                .andExpect(jsonPath("$.data.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.data.refreshToken").isNotEmpty());
+    }
+
+    /**
      * 验证已登录用户可以修改个人资料，保护“个人中心”页依赖的更新能力。
      */
     @Test
