@@ -7,8 +7,10 @@ import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.common.exception.GlobalExceptionHandler;
 import com.jhun.backend.common.response.Result;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常处理器单元测试。
@@ -45,5 +47,19 @@ class GlobalExceptionHandlerTest {
         Result<Void> body = response.getBody();
         assertNotNull(body);
         assertEquals("服务器内部错误，请稍后重试", body.getMessage());
+    }
+
+    @Test
+    void shouldKeepMissingRouteAsNotFound() {
+        ResponseEntity<Result<Void>> response = globalExceptionHandler.handleNotFoundException(
+                new NoResourceFoundException(
+                        HttpMethod.POST,
+                        "/api/internal/seeds/reservation-create",
+                        "/api/internal/seeds/reservation-create"));
+
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+        Result<Void> body = response.getBody();
+        assertNotNull(body);
+        assertEquals("请求资源不存在", body.getMessage());
     }
 }

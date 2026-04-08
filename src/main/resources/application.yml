@@ -99,3 +99,10 @@ app:
   cors:
     # 使用逗号分隔的白名单源，供 WebMvc 与 Security 共享同一跨域真相源。
     allowed-origins: http://localhost:3000,http://localhost:5173
+
+internal:
+  seed:
+    reservation-create:
+      # reservation-create internal seed 默认关闭；只有在 dev/test 显式打开时，控制器与服务 Bean 才会注册。
+      # 这样既能满足浏览器联调从 0 自举管理员和冲突数据的需求，也不会把造数入口暴露到生产默认路径。
+      enabled: false

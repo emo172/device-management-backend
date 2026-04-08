@@ -234,6 +234,199 @@ class DeviceControllerIntegrationTest {
     }
 
     /**
+     * 验证可预约设备搜索会在后端同时执行关键字匹配、分类后代展开与稳定分页。
+     * <p>
+     * 该场景刻意让一台设备通过设备名命中 `q`，另一台设备通过子分类名命中 `q`，
+     * 并把 `categoryId` 锁定在父分类，确保创建页拿到的是后端真实搜索结果，而不是前端本地过滤的假象。
+     */
+    @Test
+    void searchesReservableDevicesByKeywordAndCategory() throws Exception {
+        String token = bearer(createDeviceAdminUser("dev-search-1", "device-admin-search-1@example.com"), "DEVICE_ADMIN");
+        String rootCategoryId = UuidUtil.randomUuid();
+        String keywordMissChildCategoryId = UuidUtil.randomUuid();
+        String keywordHitChildCategoryId = UuidUtil.randomUuid();
+        String unrelatedCategoryId = UuidUtil.randomUuid();
+
+        insertCategory(rootCategoryId, "媒体设备-根", null, 1);
+        insertCategory(keywordMissChildCategoryId, "音频设备-子类", rootCategoryId, 2);
+        insertCategory(keywordHitChildCategoryId, "Camera 配件-子类", rootCategoryId, 3);
+        insertCategory(unrelatedCategoryId, "办公设备-其他", null, 4);
+
+        String matchByDeviceNameId = UuidUtil.randomUuid();
+        String matchByCategoryNameId = UuidUtil.randomUuid();
+        insertDevice(
+                matchByDeviceNameId,
+                "Alpha Camera",
+                "DEV-SEARCH-001",
+                rootCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 10, 0));
+        insertDevice(
+                matchByCategoryNameId,
+                "Beta Recorder",
+                "DEV-SEARCH-002",
+                keywordHitChildCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 9, 0));
+        insertDevice(
+                UuidUtil.randomUuid(),
+                "Gamma Speaker",
+                "DEV-SEARCH-003",
+                keywordMissChildCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 8, 0));
+        insertDevice(
+                UuidUtil.randomUuid(),
+                "Delta Camera",
+                "DEV-SEARCH-004",
+                unrelatedCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 11, 0));
+
+        mockMvc.perform(get("/api/devices/reservable")
+                        .header("Authorization", token)
+                        .param("startTime", "2026-04-10T10:00:00")
+                        .param("endTime", "2026-04-10T12:00:00")
+                        .param("q", "cAmErA")
+                        .param("categoryId", rootCategoryId)
+                        .param("page", "1")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.records[0].id").value(matchByDeviceNameId))
+                .andExpect(jsonPath("$.data.records[0].name").value("Alpha Camera"))
+                .andExpect(jsonPath("$.data.records[0].categoryId").value(rootCategoryId));
+
+        mockMvc.perform(get("/api/devices/reservable")
+                        .header("Authorization", token)
+                        .param("startTime", "2026-04-10T10:00:00")
+                        .param("endTime", "2026-04-10T12:00:00")
+                        .param("q", "cAmErA")
+                        .param("categoryId", rootCategoryId)
+                        .param("page", "2")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.records[0].id").value(matchByCategoryNameId))
+                .andExpect(jsonPath("$.data.records[0].name").value("Beta Recorder"))
+                .andExpect(jsonPath("$.data.records[0].categoryId").value(keywordHitChildCategoryId))
+                .andExpect(jsonPath("$.data.records[0].categoryName").value("Camera 配件-子类"));
+    }
+
+    /**
+     * 验证可预约设备搜索会排除静态不可预约设备与目标时间窗内的冲突设备。
+     * <p>
+     * 这里同时覆盖 `reservation_device` 优先和旧 `reservation.device_id` 兜底两种冲突真相，
+     * 防止 cutover 之后创建页把实际上已被占用或根本不可预约的设备继续暴露给前端。
+     */
+    @Test
+    void excludesConflictingOrUnavailableDevices() throws Exception {
+        String token = bearer(createDeviceAdminUser("dev-search-2", "device-admin-search-2@example.com"), "DEVICE_ADMIN");
+        User reservationUser = createNormalUser("usr-search-1", "device-user-search-1@example.com");
+        String rootCategoryId = UuidUtil.randomUuid();
+        insertCategory(rootCategoryId, "可预约筛选分类", null, 1);
+
+        String availableDeviceId = UuidUtil.randomUuid();
+        String outsideWindowDeviceId = UuidUtil.randomUuid();
+        String relationConflictDeviceId = UuidUtil.randomUuid();
+        String legacyConflictDeviceId = UuidUtil.randomUuid();
+        insertDevice(
+                availableDeviceId,
+                "Available Device",
+                "DEV-RESERVABLE-001",
+                rootCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 10, 0));
+        insertDevice(
+                outsideWindowDeviceId,
+                "Outside Window Device",
+                "DEV-RESERVABLE-002",
+                rootCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 9, 0));
+        insertDevice(
+                relationConflictDeviceId,
+                "Relation Conflict Device",
+                "DEV-RESERVABLE-003",
+                rootCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 8, 0));
+        insertDevice(
+                legacyConflictDeviceId,
+                "Legacy Conflict Device",
+                "DEV-RESERVABLE-004",
+                rootCategoryId,
+                "AVAILABLE",
+                LocalDateTime.of(2026, 4, 6, 7, 0));
+        insertDevice(
+                UuidUtil.randomUuid(),
+                "Borrowed Device",
+                "DEV-RESERVABLE-005",
+                rootCategoryId,
+                "BORROWED",
+                LocalDateTime.of(2026, 4, 6, 6, 0));
+        insertDevice(
+                UuidUtil.randomUuid(),
+                "Maintenance Device",
+                "DEV-RESERVABLE-006",
+                rootCategoryId,
+                "MAINTENANCE",
+                LocalDateTime.of(2026, 4, 6, 5, 0));
+        insertDevice(
+                UuidUtil.randomUuid(),
+                "Disabled Device",
+                "DEV-RESERVABLE-007",
+                rootCategoryId,
+                "DISABLED",
+                LocalDateTime.of(2026, 4, 6, 4, 0));
+        insertDevice(
+                UuidUtil.randomUuid(),
+                "Deleted Device",
+                "DEV-RESERVABLE-008",
+                rootCategoryId,
+                "DELETED",
+                LocalDateTime.of(2026, 4, 6, 3, 0));
+
+        String relationFirstReservationId = UuidUtil.randomUuid();
+        insertReservation(
+                relationFirstReservationId,
+                availableDeviceId,
+                reservationUser.getId(),
+                LocalDateTime.of(2026, 4, 10, 10, 30),
+                LocalDateTime.of(2026, 4, 10, 11, 30),
+                "APPROVED");
+        insertReservationDevice(relationFirstReservationId, relationConflictDeviceId, 0);
+
+        insertReservation(
+                UuidUtil.randomUuid(),
+                legacyConflictDeviceId,
+                reservationUser.getId(),
+                LocalDateTime.of(2026, 4, 10, 10, 45),
+                LocalDateTime.of(2026, 4, 10, 11, 15),
+                "PENDING_DEVICE_APPROVAL");
+
+        insertReservation(
+                UuidUtil.randomUuid(),
+                outsideWindowDeviceId,
+                reservationUser.getId(),
+                LocalDateTime.of(2026, 4, 10, 12, 30),
+                LocalDateTime.of(2026, 4, 10, 13, 30),
+                "APPROVED");
+
+        mockMvc.perform(get("/api/devices/reservable")
+                        .header("Authorization", token)
+                        .param("startTime", "2026-04-10T10:00:00")
+                        .param("endTime", "2026-04-10T12:00:00")
+                        .param("categoryId", rootCategoryId)
+                        .param("page", "1")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.records[0].id").value(availableDeviceId))
+                .andExpect(jsonPath("$.data.records[1].id").value(outsideWindowDeviceId));
+    }
+
+    /**
      * 验证设备图片上传后，即使客户端提交了带路径片段的文件名，
      * 服务端仍会返回 `/files/devices/` 前缀下的稳定公开地址，并允许匿名直接访问图片内容。
      */
@@ -466,7 +659,31 @@ class DeviceControllerIntegrationTest {
                 .andReturn();
 
         String deviceId = objectMapper.readTree(createResult.getResponse().getContentAsString()).path("data").path("id").asText();
-        insertApprovedFutureReservation(deviceId, affectedUser.getId(), LocalDateTime.of(2026, 4, 10, 10, 0, 0));
+        MvcResult primaryDeviceCreateResult = mockMvc.perform(post("/api/devices")
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "多设备预约主设备",
+                                  "deviceNumber": "DEV-MAINT-002",
+                                  "categoryName": "%s",
+                                  "status": "AVAILABLE",
+                                  "description": "维修通知主设备兼容测试",
+                                  "location": "Studio-3"
+                                }
+                                """.formatted(categoryName)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String primaryDeviceId = objectMapper.readTree(primaryDeviceCreateResult.getResponse().getContentAsString())
+                .path("data")
+                .path("id")
+                .asText();
+        insertApprovedFutureReservationWithRelation(
+                primaryDeviceId,
+                deviceId,
+                affectedUser.getId(),
+                LocalDateTime.of(2026, 4, 10, 10, 0, 0));
 
         mockMvc.perform(put("/api/devices/{id}/status", deviceId)
                         .header("Authorization", token)
@@ -623,6 +840,90 @@ class DeviceControllerIntegrationTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * 直接写入分类数据，便于搜索场景精确控制父子层级关系，而不把测试关注点分散到分类创建接口本身。
+     */
+    private void insertCategory(String categoryId, String name, String parentId, int sortOrder) {
+        jdbcTemplate.update(
+                "INSERT INTO device_category (id, name, parent_id, sort_order, description, default_approval_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                categoryId,
+                name,
+                parentId,
+                sortOrder,
+                name + "-描述",
+                "DEVICE_ONLY",
+                LocalDateTime.of(2026, 4, 6, 8, 0),
+                LocalDateTime.of(2026, 4, 6, 8, 0));
+    }
+
+    /**
+     * 直接写入设备数据，用固定 created_at 控制搜索结果顺序，避免分页断言被数据库默认时间抖动影响。
+     */
+    private void insertDevice(
+            String deviceId,
+            String name,
+            String deviceNumber,
+            String categoryId,
+            String status,
+            LocalDateTime createdAt) {
+        jdbcTemplate.update(
+                "INSERT INTO device (id, name, device_number, category_id, status, approval_mode_override, image_url, description, purchase_date, location, status_change_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                deviceId,
+                name,
+                deviceNumber,
+                categoryId,
+                status,
+                null,
+                null,
+                name + "-描述",
+                null,
+                "SEARCH-ROOM",
+                null,
+                createdAt,
+                createdAt);
+    }
+
+    /**
+     * 直接写入预约聚合，便于搜索测试独立控制时间窗冲突数据，而不再依赖完整预约审批流程。
+     */
+    private void insertReservation(
+            String reservationId,
+            String legacyDeviceId,
+            String userId,
+            LocalDateTime startTime,
+            LocalDateTime endTime,
+            String status) {
+        jdbcTemplate.update(
+                "INSERT INTO reservation (id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status, approval_mode_snapshot, sign_status, remark, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                reservationId,
+                userId,
+                userId,
+                "SELF",
+                legacyDeviceId,
+                startTime,
+                endTime,
+                "搜索测试预约",
+                status,
+                "DEVICE_ONLY",
+                "NOT_CHECKED_IN",
+                "搜索测试备注",
+                startTime.minusDays(1),
+                startTime.minusDays(1));
+    }
+
+    /**
+     * 写入预约与设备关联，验证搜索冲突检测已经切到 `reservation_device` 为正式真相源。
+     */
+    private void insertReservationDevice(String reservationId, String deviceId, int deviceOrder) {
+        jdbcTemplate.update(
+                "INSERT INTO reservation_device (id, reservation_id, device_id, device_order, created_at) VALUES (?, ?, ?, ?, ?)",
+                UuidUtil.randomUuid(),
+                reservationId,
+                deviceId,
+                deviceOrder,
+                LocalDateTime.of(2026, 4, 9, 8, 0));
+    }
+
     private User createDeviceAdminUser(String username, String email) {
         Role role = roleMapper.findByName("DEVICE_ADMIN");
         User user = new User();
@@ -672,16 +973,24 @@ class DeviceControllerIntegrationTest {
     }
 
     /**
-     * 直接写入未来审批通过预约，避免该测试再依赖完整预约审批链，确保关注点只落在维修通知联动本身。
+     * 直接写入未来审批通过的多设备预约。
+     * <p>
+     * 这里故意让 `reservation.device_id` 停在主设备兼容列，而把真正进入维修的目标设备放进 `reservation_device`，
+     * 用来证明维修通知查询已经切到关联表真相，而不是继续只看旧列。
      */
-    private void insertApprovedFutureReservation(String deviceId, String userId, LocalDateTime startTime) {
+    private void insertApprovedFutureReservationWithRelation(
+            String primaryDeviceId,
+            String relatedDeviceId,
+            String userId,
+            LocalDateTime startTime) {
+        String reservationId = UuidUtil.randomUuid();
         jdbcTemplate.update(
                 "INSERT INTO reservation (id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status, approval_mode_snapshot, sign_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                UuidUtil.randomUuid(),
+                reservationId,
                 userId,
                 userId,
                 "SELF",
-                deviceId,
+                primaryDeviceId,
                 startTime,
                 startTime.plusHours(2),
                 "维修通知测试预约",
@@ -690,6 +999,8 @@ class DeviceControllerIntegrationTest {
                 "NOT_CHECKED_IN",
                 LocalDateTime.of(2026, 4, 9, 8, 0, 0),
                 LocalDateTime.of(2026, 4, 9, 8, 0, 0));
+        insertReservationDevice(reservationId, primaryDeviceId, 0);
+        insertReservationDevice(reservationId, relatedDeviceId, 1);
     }
 
     private String bearer(User user, String role) {

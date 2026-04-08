@@ -69,6 +69,7 @@ public class SecurityConfig {
                                 "/api/auth/login",
                                 "/api/auth/verification-code",
                                 "/api/auth/reset-password",
+                                "/api/internal/seeds/reservation-create",
                                 "/files/devices/**",
                                 "/error")
                         .permitAll()
