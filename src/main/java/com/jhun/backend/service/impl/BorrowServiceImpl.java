@@ -9,14 +9,17 @@ import com.jhun.backend.entity.BorrowRecord;
 import com.jhun.backend.entity.Device;
 import com.jhun.backend.entity.DeviceStatusLog;
 import com.jhun.backend.entity.Reservation;
+import com.jhun.backend.entity.ReservationDevice;
 import com.jhun.backend.entity.User;
 import com.jhun.backend.mapper.BorrowRecordMapper;
 import com.jhun.backend.mapper.DeviceMapper;
 import com.jhun.backend.mapper.DeviceStatusLogMapper;
+import com.jhun.backend.mapper.ReservationDeviceMapper;
 import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.BorrowService;
 import com.jhun.backend.util.UuidUtil;
+import java.util.ArrayList;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +43,7 @@ public class BorrowServiceImpl implements BorrowService {
 
     private final BorrowRecordMapper borrowRecordMapper;
     private final ReservationMapper reservationMapper;
+    private final ReservationDeviceMapper reservationDeviceMapper;
     private final DeviceMapper deviceMapper;
     private final DeviceStatusLogMapper deviceStatusLogMapper;
     private final UserMapper userMapper;
@@ -47,11 +51,13 @@ public class BorrowServiceImpl implements BorrowService {
     public BorrowServiceImpl(
             BorrowRecordMapper borrowRecordMapper,
             ReservationMapper reservationMapper,
+            ReservationDeviceMapper reservationDeviceMapper,
             DeviceMapper deviceMapper,
             DeviceStatusLogMapper deviceStatusLogMapper,
             UserMapper userMapper) {
         this.borrowRecordMapper = borrowRecordMapper;
         this.reservationMapper = reservationMapper;
+        this.reservationDeviceMapper = reservationDeviceMapper;
         this.deviceMapper = deviceMapper;
         this.deviceStatusLogMapper = deviceStatusLogMapper;
         this.userMapper = userMapper;
@@ -62,48 +68,53 @@ public class BorrowServiceImpl implements BorrowService {
     /**
      * 以事务方式完成借用确认。
      * <p>
-     * 这里先校验角色、预约状态和签到状态，再校验同一预约只能生成一条借还记录，最后同时写入借还记录并更新设备状态与状态日志；
-     * 之所以必须放在一个事务里，是因为借用确认一旦成功，系统就要同时承认“记录已建立”和“设备已借出”两个事实，任何一步单独成功都会导致业务状态失真。
+     * 这里先校验角色、预约状态和签到状态，再确认整单预约尚未生成 borrow_record，随后按预约关联顺序为每台设备各写 1 条正式记录；
+     * 之所以必须放在一个事务里，是因为借用确认一旦成功，系统就要同时承认“整单记录已建立”和“整组设备已借出”两个事实，任何一步单独成功都会导致多设备预约出现局部成功分叉。
      */
     public BorrowRecordResponse confirmBorrow(String reservationId, String operatorId, String role, ConfirmBorrowRequest request) {
         ensureDeviceAdmin(role, "只有设备管理员可以确认借用");
         Reservation reservation = mustFindReservation(reservationId);
         validateBorrowableReservation(reservation);
-        if (borrowRecordMapper.findByReservationId(reservationId) != null) {
+        if (!borrowRecordMapper.findByReservationId(reservationId).isEmpty()) {
             throw new BusinessException("同一预约已生成借还记录");
         }
 
-        Device device = mustFindDevice(reservation.getDeviceId());
-        if (!"AVAILABLE".equals(device.getStatus())) {
-            throw new BusinessException("当前设备状态不允许确认借用");
-        }
+        List<String> reservationDeviceIds = loadReservationDeviceIds(reservation);
+        List<Device> reservationDevices = reservationDeviceIds.stream().map(this::mustFindDevice).toList();
+        validateAggregateBorrowableDevices(reservationDevices);
 
         LocalDateTime borrowTime = request != null && request.borrowTime() != null ? request.borrowTime() : LocalDateTime.now();
         if (borrowTime.isAfter(reservation.getEndTime())) {
             throw new BusinessException("借用时间不能晚于预约结束时间");
         }
 
-        BorrowRecord borrowRecord = new BorrowRecord();
-        borrowRecord.setId(UuidUtil.randomUuid());
-        borrowRecord.setReservationId(reservation.getId());
-        borrowRecord.setDeviceId(reservation.getDeviceId());
-        borrowRecord.setUserId(reservation.getUserId());
-        borrowRecord.setBorrowTime(borrowTime);
-        borrowRecord.setExpectedReturnTime(reservation.getEndTime());
-        borrowRecord.setStatus("BORROWED");
-        borrowRecord.setBorrowCheckStatus(request == null ? null : request.borrowCheckStatus());
-        borrowRecord.setRemark(request == null ? null : request.remark());
-        borrowRecord.setOperatorId(operatorId);
-        borrowRecord.setCreatedAt(LocalDateTime.now());
-        borrowRecord.setUpdatedAt(LocalDateTime.now());
+        List<BorrowRecord> aggregateBorrowRecords = new ArrayList<>();
+        LocalDateTime writeTime = LocalDateTime.now();
         try {
-            borrowRecordMapper.insert(borrowRecord);
+            /*
+             * 多设备预约仍然只能整单借出：
+             * 这里先按预约关联顺序为每台设备各写 1 条 borrow_record，后续任何一步失败都会由事务整体回滚，
+             * 从而避免出现“部分设备已有借还记录、部分设备还停留在 APPROVED”的分叉状态。
+             */
+            for (String deviceId : reservationDeviceIds) {
+                BorrowRecord borrowRecord = buildBorrowRecord(
+                        reservation,
+                        deviceId,
+                        operatorId,
+                        request,
+                        borrowTime,
+                        writeTime);
+                borrowRecordMapper.insert(borrowRecord);
+                aggregateBorrowRecords.add(borrowRecord);
+            }
         } catch (DataIntegrityViolationException exception) {
             throw new BusinessException("同一预约已生成借还记录");
         }
 
-        updateDeviceStatus(device, "AVAILABLE", "BORROWED", "借用确认", operatorId);
-        return toResponse(borrowRecord);
+        for (Device device : reservationDevices) {
+            updateDeviceStatus(device, "AVAILABLE", "BORROWED", "借用确认", operatorId);
+        }
+        return toResponse(aggregateBorrowRecords.getFirst());
     }
 
     @Override
@@ -111,47 +122,55 @@ public class BorrowServiceImpl implements BorrowService {
     /**
      * 以事务方式完成归还确认。
      * <p>
-     * 只有设备管理员可以执行该操作，并且只有处于借出中的正式记录才允许归还；
-     * 该方法先更新 borrow_record 的归还信息，再把设备从 {@code BORROWED} 恢复为 {@code AVAILABLE} 并记录设备日志，
-     * 用于落实“归还必须走正式流程，不能靠设备状态手工回退”的规则。
+     * 只有设备管理员可以执行该操作，并且一次只能把整张预约聚合里的借还记录一起归还；
+     * 该方法会先校验同 reservation_id 下的全部 borrow_record，再统一更新归还信息并把整组设备从 {@code BORROWED} 恢复为 {@code AVAILABLE}，
+     * 用于落实“归还必须走正式流程，且不能把多设备预约拆成局部归还”的规则。
      */
     public BorrowRecordResponse confirmReturn(String borrowRecordId, String operatorId, String role, ConfirmReturnRequest request) {
         ensureDeviceAdmin(role, "只有设备管理员可以确认归还");
-        BorrowRecord borrowRecord = mustFindBorrowRecord(borrowRecordId);
-        if (!"BORROWED".equals(borrowRecord.getStatus()) && !"OVERDUE".equals(borrowRecord.getStatus())) {
-            throw new BusinessException("当前借还记录不处于可归还状态");
+        BorrowRecord targetBorrowRecord = mustFindBorrowRecord(borrowRecordId);
+        List<BorrowRecord> aggregateBorrowRecords = borrowRecordMapper.findByReservationId(targetBorrowRecord.getReservationId());
+        if (aggregateBorrowRecords.isEmpty()) {
+            throw new BusinessException("借还记录不存在");
         }
 
         LocalDateTime returnTime = request != null && request.returnTime() != null ? request.returnTime() : LocalDateTime.now();
-        if (returnTime.isBefore(borrowRecord.getBorrowTime())) {
-            throw new BusinessException("归还时间不能早于借用时间");
+        validateAggregateReturnableRecords(aggregateBorrowRecords, returnTime);
+
+        List<Device> borrowedDevices = aggregateBorrowRecords.stream()
+                .map(record -> mustFindDevice(record.getDeviceId()))
+                .toList();
+        for (Device device : borrowedDevices) {
+            if (!"BORROWED".equals(device.getStatus())) {
+                throw new BusinessException("设备当前不处于借出状态，无法确认归还");
+            }
         }
 
-        String mergedRemark = mergeReturnRemark(borrowRecord.getRemark(), request == null ? null : request.remark());
-        int updatedRows = borrowRecordMapper.updateReturnIfInBorrowedState(
-                borrowRecordId,
-                returnTime,
-                request == null ? null : request.returnCheckStatus(),
-                mergedRemark,
-                operatorId,
-                LocalDateTime.now());
-        if (updatedRows != 1) {
-            throw new BusinessException("当前借还记录不处于可归还状态");
+        LocalDateTime updatedAt = LocalDateTime.now();
+        for (BorrowRecord aggregateBorrowRecord : aggregateBorrowRecords) {
+            String mergedRemark = mergeReturnRemark(aggregateBorrowRecord.getRemark(), request == null ? null : request.remark());
+            int updatedRows = borrowRecordMapper.updateReturnIfInBorrowedState(
+                    aggregateBorrowRecord.getId(),
+                    returnTime,
+                    request == null ? null : request.returnCheckStatus(),
+                    mergedRemark,
+                    operatorId,
+                    updatedAt);
+            if (updatedRows != 1) {
+                throw new BusinessException("当前借还记录不处于可归还状态");
+            }
+            aggregateBorrowRecord.setReturnTime(returnTime);
+            aggregateBorrowRecord.setReturnCheckStatus(request == null ? null : request.returnCheckStatus());
+            aggregateBorrowRecord.setReturnOperatorId(operatorId);
+            aggregateBorrowRecord.setStatus("RETURNED");
+            aggregateBorrowRecord.setRemark(mergedRemark);
+            aggregateBorrowRecord.setUpdatedAt(updatedAt);
         }
 
-        borrowRecord.setReturnTime(returnTime);
-        borrowRecord.setReturnCheckStatus(request == null ? null : request.returnCheckStatus());
-        borrowRecord.setReturnOperatorId(operatorId);
-        borrowRecord.setStatus("RETURNED");
-        borrowRecord.setRemark(mergedRemark);
-        borrowRecord.setUpdatedAt(LocalDateTime.now());
-
-        Device device = mustFindDevice(borrowRecord.getDeviceId());
-        if (!"BORROWED".equals(device.getStatus())) {
-            throw new BusinessException("设备当前不处于借出状态，无法确认归还");
+        for (Device device : borrowedDevices) {
+            updateDeviceStatus(device, "BORROWED", "AVAILABLE", "归还确认", operatorId);
         }
-        updateDeviceStatus(device, "BORROWED", "AVAILABLE", "归还确认", operatorId);
-        return toResponse(borrowRecord);
+        return toResponse(selectBorrowRecord(aggregateBorrowRecords, borrowRecordId));
     }
 
     @Override
@@ -206,6 +225,100 @@ public class BorrowServiceImpl implements BorrowService {
         if (!"CHECKED_IN".equals(reservation.getSignStatus()) && !"CHECKED_IN_TIMEOUT".equals(reservation.getSignStatus())) {
             throw new BusinessException("预约未签到，不能确认借用");
         }
+    }
+
+    /**
+     * 校验整单关联设备都仍可借出。
+     * <p>
+     * 多设备预约不能出现“有的设备已被借走、有的设备还能借”的局部成功，
+     * 所以这里必须在真正写 borrow_record 之前先把整组设备状态统一收口为 AVAILABLE。
+     */
+    private void validateAggregateBorrowableDevices(List<Device> reservationDevices) {
+        for (Device device : reservationDevices) {
+            if (!"AVAILABLE".equals(device.getStatus())) {
+                throw new BusinessException("当前设备状态不允许确认借用");
+            }
+        }
+    }
+
+    /**
+     * 校验整单借还记录都仍处于可归还状态。
+     * <p>
+     * 归还入口虽然仍接收单条 borrowRecordId，但服务层必须把它提升为 reservation 聚合级别处理；
+     * 只要任一兄弟记录已经闭环或时间非法，就整单拒绝，避免把多设备预约拆成局部归还。
+     */
+    private void validateAggregateReturnableRecords(List<BorrowRecord> aggregateBorrowRecords, LocalDateTime returnTime) {
+        for (BorrowRecord borrowRecord : aggregateBorrowRecords) {
+            if (!"BORROWED".equals(borrowRecord.getStatus()) && !"OVERDUE".equals(borrowRecord.getStatus())) {
+                throw new BusinessException("当前借还记录不处于可归还状态");
+            }
+            if (returnTime.isBefore(borrowRecord.getBorrowTime())) {
+                throw new BusinessException("归还时间不能早于借用时间");
+            }
+        }
+    }
+
+    /**
+     * 读取预约聚合当前应参与借还流程的设备顺序。
+     * <p>
+     * 正式真相优先来自 reservation_device；只有极少量尚未完成回填的历史旧数据，
+     * 才允许回退到 reservation.device_id 兼容列。
+     */
+    private List<String> loadReservationDeviceIds(Reservation reservation) {
+        List<String> relationDeviceIds = reservationDeviceMapper.findByReservationId(reservation.getId()).stream()
+                .map(ReservationDevice::getDeviceId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (!relationDeviceIds.isEmpty()) {
+            return relationDeviceIds;
+        }
+        if (reservation.getDeviceId() != null && !reservation.getDeviceId().isBlank()) {
+            return List.of(reservation.getDeviceId());
+        }
+        throw new BusinessException("预约未关联任何设备，不能继续借还流程");
+    }
+
+    /**
+     * 构造单台设备对应的正式借还记录。
+     * <p>
+     * 多设备预约内部虽然会扇出多条记录，但共享同一个 reservation_id、borrow_time 和 expected_return_time，
+     * 从而保证后续逾期识别和整单归还仍围绕同一预约聚合推进。
+     */
+    private BorrowRecord buildBorrowRecord(
+            Reservation reservation,
+            String deviceId,
+            String operatorId,
+            ConfirmBorrowRequest request,
+            LocalDateTime borrowTime,
+            LocalDateTime writeTime) {
+        BorrowRecord borrowRecord = new BorrowRecord();
+        borrowRecord.setId(UuidUtil.randomUuid());
+        borrowRecord.setReservationId(reservation.getId());
+        borrowRecord.setDeviceId(deviceId);
+        borrowRecord.setUserId(reservation.getUserId());
+        borrowRecord.setBorrowTime(borrowTime);
+        borrowRecord.setExpectedReturnTime(reservation.getEndTime());
+        borrowRecord.setStatus("BORROWED");
+        borrowRecord.setBorrowCheckStatus(request == null ? null : request.borrowCheckStatus());
+        borrowRecord.setRemark(request == null ? null : request.remark());
+        borrowRecord.setOperatorId(operatorId);
+        borrowRecord.setCreatedAt(writeTime);
+        borrowRecord.setUpdatedAt(writeTime);
+        return borrowRecord;
+    }
+
+    /**
+     * 从整单 borrow_record 集合中找回当前入口命中的那条记录。
+     * <p>
+     * 控制器与 DTO 契约暂未扩展成“返回整组借还记录”，
+     * 因此当前仍回传调用入口对应的那条记录，但底层实际完成的是整单借还事务。
+     */
+    private BorrowRecord selectBorrowRecord(List<BorrowRecord> aggregateBorrowRecords, String borrowRecordId) {
+        return aggregateBorrowRecords.stream()
+                .filter(record -> borrowRecordId.equals(record.getId()))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException("借还记录不存在"));
     }
 
     /**
@@ -326,7 +439,7 @@ public class BorrowServiceImpl implements BorrowService {
      * 借用确认依赖预约作为真相源，因此这里必须在业务层明确阻断不存在的预约，防止后续写入孤儿 borrow_record。
      */
     private Reservation mustFindReservation(String reservationId) {
-        Reservation reservation = reservationMapper.selectById(reservationId);
+        Reservation reservation = reservationMapper.findAggregateById(reservationId);
         if (reservation == null) {
             throw new BusinessException("预约不存在");
         }

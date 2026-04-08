@@ -135,7 +135,7 @@ CREATE TABLE reservation (
     user_id VARCHAR(36) NOT NULL,
     created_by VARCHAR(36) NOT NULL,
     reservation_mode VARCHAR(20) NOT NULL DEFAULT 'SELF',
-    device_id VARCHAR(36) NOT NULL,
+    device_id VARCHAR(36),
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP NOT NULL,
     purpose VARCHAR(500) NOT NULL,
@@ -159,6 +159,18 @@ CREATE TABLE reservation (
     CONSTRAINT fk_reservation_device_id FOREIGN KEY (device_id) REFERENCES device (id)
 );
 
+CREATE TABLE reservation_device (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    reservation_id VARCHAR(36) NOT NULL,
+    device_id VARCHAR(36) NOT NULL,
+    device_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_reservation_device_reservation_device UNIQUE (reservation_id, device_id),
+    CONSTRAINT uk_reservation_device_reservation_order UNIQUE (reservation_id, device_order),
+    CONSTRAINT fk_reservation_device_reservation_id FOREIGN KEY (reservation_id) REFERENCES reservation (id) ON DELETE CASCADE,
+    CONSTRAINT fk_reservation_device_device_id FOREIGN KEY (device_id) REFERENCES device (id)
+);
+
 CREATE TABLE borrow_record (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     reservation_id VARCHAR(36) NOT NULL,
@@ -175,7 +187,8 @@ CREATE TABLE borrow_record (
     return_operator_id VARCHAR(36),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uk_borrow_reservation_id UNIQUE (reservation_id),
+    -- 测试库与正式库保持一致：多设备预约允许同一 reservation_id 下存在多条 borrow_record，但同一设备只能有一条。
+    CONSTRAINT uk_borrow_reservation_device UNIQUE (reservation_id, device_id),
     CONSTRAINT fk_borrow_reservation_id FOREIGN KEY (reservation_id) REFERENCES reservation (id),
     CONSTRAINT fk_borrow_device_id FOREIGN KEY (device_id) REFERENCES device (id),
     CONSTRAINT fk_borrow_user_id FOREIGN KEY (user_id) REFERENCES `user` (id),

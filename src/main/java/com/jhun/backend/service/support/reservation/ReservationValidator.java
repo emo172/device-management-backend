@@ -3,6 +3,7 @@ package com.jhun.backend.service.support.reservation;
 import com.jhun.backend.common.exception.BusinessException;
 import com.jhun.backend.dto.reservation.CreateReservationRequest;
 import com.jhun.backend.entity.Device;
+import java.time.LocalDateTime;
 import org.springframework.stereotype.Component;
 
 /**
@@ -14,7 +15,17 @@ import org.springframework.stereotype.Component;
 public class ReservationValidator {
 
     public void validateCreateRequest(CreateReservationRequest request) {
-        if (request.startTime() == null || request.endTime() == null || !request.startTime().isBefore(request.endTime())) {
+        validateCreateTimeRange(request.startTime(), request.endTime());
+    }
+
+    /**
+     * 校验预约时间窗。
+     * <p>
+     * 旧单设备与新多设备预约都共享相同的时间窗规则，
+     * 因此这里抽成独立方法，避免多入口分别维护“开始必须早于结束”的重复校验。
+     */
+    public void validateCreateTimeRange(LocalDateTime startTime, LocalDateTime endTime) {
+        if (startTime == null || endTime == null || !startTime.isBefore(endTime)) {
             throw new BusinessException("预约开始时间必须早于结束时间");
         }
     }

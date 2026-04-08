@@ -6,6 +6,7 @@ import com.jhun.backend.dto.device.DevicePageResponse;
 import com.jhun.backend.dto.device.DeviceResponse;
 import com.jhun.backend.dto.device.UpdateDeviceStatusRequest;
 import com.jhun.backend.dto.device.UpdateDeviceRequest;
+import java.time.LocalDateTime;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
@@ -20,6 +21,15 @@ public interface DeviceService {
     DeviceResponse softDeleteDevice(String deviceId);
 
     DevicePageResponse listDevices(int page, int size, String categoryName);
+
+    DevicePageResponse searchReservableDevices(
+            LocalDateTime startTime,
+            LocalDateTime endTime,
+            String q,
+            String categoryId,
+            boolean includeDescendants,
+            int page,
+            int size);
 
     DeviceDetailResponse getDeviceDetail(String deviceId);
 

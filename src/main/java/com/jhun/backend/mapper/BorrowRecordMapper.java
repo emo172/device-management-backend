@@ -10,13 +10,19 @@ import org.apache.ibatis.annotations.Param;
 /**
  * 借还记录数据访问接口。
  * <p>
- * 除基础 CRUD 外，还提供按预约定位唯一借还记录与按角色可见范围查询列表的能力，
- * 以支撑“同一预约只能生成一条借还记录”和借还记录页查询。
+ * 除基础 CRUD 外，还提供按预约聚合定位借还记录与按角色可见范围查询列表的能力，
+ * 以支撑“多设备预约在内部按设备扇出 borrow_record，但外部仍按预约聚合驱动借还”的语义。
  */
 @Mapper
 public interface BorrowRecordMapper extends BaseMapper<BorrowRecord> {
 
-    BorrowRecord findByReservationId(@Param("reservationId") String reservationId);
+    /**
+     * 查询某条预约聚合当前关联的全部借还记录。
+     * <p>
+     * 单设备预约通常只有 1 条记录；多设备预约会为每台设备各落 1 条记录，
+     * 服务层需要基于整组记录做幂等、归还和防分叉校验。
+     */
+    List<BorrowRecord> findByReservationId(@Param("reservationId") String reservationId);
 
     List<BorrowRecord> findPageByConditions(
             @Param("status") String status,

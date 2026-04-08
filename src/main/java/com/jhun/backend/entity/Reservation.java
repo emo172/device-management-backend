@@ -1,6 +1,7 @@
 package com.jhun.backend.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -24,7 +25,14 @@ public class Reservation {
     private String createdBy;
     @TableField("reservation_mode")
     private String reservationMode;
-    @TableField("device_id")
+
+    /**
+     * 旧单设备模型遗留的兼容字段。
+     * <p>
+     * 自预约聚合切到 {@code reservation_device} 后，更新操作不允许再把这里当成真相源覆盖写回数据库；
+     * 服务层只把它当成“主设备兼容投影”读取，真正的设备关联关系以关联表为准。
+     */
+    @TableField(value = "device_id", updateStrategy = FieldStrategy.NEVER)
     private String deviceId;
     @TableField("start_time")
     private LocalDateTime startTime;

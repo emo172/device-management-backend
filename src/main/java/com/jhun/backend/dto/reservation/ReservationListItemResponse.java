@@ -1,6 +1,7 @@
 package com.jhun.backend.dto.reservation;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 预约列表单项响应。
@@ -13,8 +14,13 @@ import java.time.LocalDateTime;
  * @param createdByName 创建人用户名，便于区分本人预约与代预约
  * @param reservationMode 预约模式，固定为 SELF 或 ON_BEHALF
  * @param deviceId 设备 ID
- * @param deviceName 设备名称，供列表页直接展示
- * @param deviceNumber 设备编号，便于管理端快速定位实物设备
+ * @param deviceName 设备名称，兼容旧列表展示，固定映射到主设备
+ * @param deviceNumber 设备编号，兼容旧列表展示，固定映射到主设备
+ * @param deviceCount 当前预约关联的设备数量
+ * @param devices 当前预约关联的完整设备摘要列表，顺序与 reservation_device.device_order 一致
+ * @param primaryDeviceId 主设备 ID；旧字段的正式映射来源
+ * @param primaryDeviceName 主设备名称；旧字段的正式映射来源
+ * @param primaryDeviceNumber 主设备编号；旧字段的正式映射来源
  * @param startTime 预约开始时间
  * @param endTime 预约结束时间
  * @param purpose 预约用途
@@ -35,6 +41,11 @@ public record ReservationListItemResponse(
         String deviceId,
         String deviceName,
         String deviceNumber,
+        int deviceCount,
+        List<ReservationDeviceSummaryResponse> devices,
+        String primaryDeviceId,
+        String primaryDeviceName,
+        String primaryDeviceNumber,
         LocalDateTime startTime,
         LocalDateTime endTime,
         String purpose,

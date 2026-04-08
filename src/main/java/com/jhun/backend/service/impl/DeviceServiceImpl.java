@@ -21,6 +21,8 @@ import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.service.DeviceService;
 import com.jhun.backend.service.support.device.DeviceImageStorageSupport;
 import com.jhun.backend.util.UuidUtil;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -154,6 +156,39 @@ public class DeviceServiceImpl implements DeviceService {
     }
 
     /**
+     * 按时间窗搜索可预约设备。
+     * <p>
+     * 创建设备预约页不能再走“先查设备列表、再前端本地过滤”的旧模式；
+     * 因此这里统一负责时间窗校验、分类后代展开、关键字标准化与数据库分页编排。
+     */
+    @Override
+    public DevicePageResponse searchReservableDevices(
+            LocalDateTime startTime,
+            LocalDateTime endTime,
+            String q,
+            String categoryId,
+            boolean includeDescendants,
+            int page,
+            int size) {
+        validateReservableSearchArguments(startTime, endTime, page, size);
+        List<DeviceCategory> categories = deviceCategoryMapper.findAllOrderBySort();
+        List<String> categoryIds = resolveReservableCategoryIds(categoryId, includeDescendants, categories);
+        String keyword = normalizeKeyword(q);
+        long total = deviceMapper.countReservableDevices(startTime, endTime, keyword, categoryIds);
+        if (total == 0) {
+            return new DevicePageResponse(0, List.of());
+        }
+        Map<String, String> categoryNameMap = categories.stream()
+                .collect(Collectors.toMap(DeviceCategory::getId, DeviceCategory::getName));
+        int offset = (page - 1) * size;
+        List<DeviceResponse> records = deviceMapper.findReservableDevices(startTime, endTime, keyword, categoryIds, size, offset)
+                .stream()
+                .map(device -> toResponse(device, categoryNameMap.get(device.getCategoryId())))
+                .toList();
+        return new DevicePageResponse(total, records);
+    }
+
+    /**
      * 查询设备详情。
      * <p>
      * 详情会带出设备状态日志，帮助前端同时呈现当前状态与最近状态流转轨迹。
@@ -246,6 +281,65 @@ public class DeviceServiceImpl implements DeviceService {
                 .filter(category -> category.getName().equals(categoryName))
                 .findFirst()
                 .orElseThrow(() -> new BusinessException("设备分类不存在"));
+    }
+
+    /**
+     * 统一校验可预约搜索的核心入参。
+     * <p>
+     * 时间窗和分页是后端 SQL 过滤的基础锚点，任何空值、倒置时间或非正分页参数都会直接破坏搜索契约。
+     */
+    private void validateReservableSearchArguments(LocalDateTime startTime, LocalDateTime endTime, int page, int size) {
+        if (startTime == null || endTime == null || !startTime.isBefore(endTime)) {
+            throw new BusinessException("预约开始时间必须早于结束时间");
+        }
+        if (page <= 0 || size <= 0) {
+            throw new BusinessException("分页参数必须大于 0");
+        }
+    }
+
+    /**
+     * 解析搜索使用的分类范围。
+     * <p>
+     * 当传入 `categoryId` 时，创建页默认需要包含当前节点和全部后代分类；
+     * 只有显式把 `includeDescendants` 关掉时，才退回到精确分类过滤。
+     */
+    private List<String> resolveReservableCategoryIds(
+            String categoryId,
+            boolean includeDescendants,
+            List<DeviceCategory> categories) {
+        if (categoryId == null || categoryId.isBlank()) {
+            return null;
+        }
+        Map<String, DeviceCategory> categoryMap = categories.stream()
+                .collect(Collectors.toMap(DeviceCategory::getId, category -> category));
+        if (!categoryMap.containsKey(categoryId)) {
+            throw new BusinessException("设备分类不存在");
+        }
+        if (!includeDescendants) {
+            return List.of(categoryId);
+        }
+        Map<String, List<DeviceCategory>> childrenMap = categories.stream()
+                .filter(category -> category.getParentId() != null)
+                .collect(Collectors.groupingBy(DeviceCategory::getParentId));
+        ArrayDeque<String> queue = new ArrayDeque<>();
+        List<String> collected = new ArrayList<>();
+        queue.add(categoryId);
+        while (!queue.isEmpty()) {
+            String currentCategoryId = queue.removeFirst();
+            collected.add(currentCategoryId);
+            for (DeviceCategory child : childrenMap.getOrDefault(currentCategoryId, List.of())) {
+                queue.addLast(child.getId());
+            }
+        }
+        return collected;
+    }
+
+    private String normalizeKeyword(String q) {
+        if (q == null) {
+            return null;
+        }
+        String normalized = q.trim();
+        return normalized.isEmpty() ? null : normalized;
     }
 
     private Device mustFindDevice(String deviceId) {

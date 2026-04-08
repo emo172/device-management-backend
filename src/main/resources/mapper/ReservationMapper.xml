@@ -3,22 +3,67 @@
 <mapper namespace="com.jhun.backend.mapper.ReservationMapper">
 
     <!--
+        统一预约聚合列投影。
+        读路径切换后，主设备兼容字段优先从 reservation_device 的第 1 条关联恢复；
+        只有历史回填尚未触达的极短暂窗口，才回退到旧列 reservation.device_id，避免 cutover 期间旧详情/列表直接断读。
+    -->
+    <sql id="reservationAggregateColumns">
+        r.id, r.batch_id, r.user_id, r.created_by, r.reservation_mode,
+        COALESCE(primary_relation.device_id, r.device_id) AS device_id,
+        r.start_time, r.end_time, r.purpose, r.status,
+        r.approval_mode_snapshot, r.remark, r.device_approver_id, r.device_approved_at, r.device_approval_remark,
+        r.system_approver_id, r.system_approved_at, r.system_approval_remark, r.sign_status, r.checked_in_at,
+        r.cancel_reason, r.cancel_time, r.created_at, r.updated_at
+    </sql>
+
+    <!--
+        为旧 controller/service 读模型恢复“主设备”兼容字段。
+        当前阶段把最小 device_order 视为 primary device，后续多设备读模型再在此基础上扩展 devices[] / deviceCount。
+    -->
+    <sql id="primaryRelationJoin">
+        LEFT JOIN (
+            SELECT rd.reservation_id, rd.device_id
+            FROM reservation_device rd
+            INNER JOIN (
+                SELECT reservation_id, MIN(device_order) AS min_device_order
+                FROM reservation_device
+                GROUP BY reservation_id
+            ) first_relation
+                ON first_relation.reservation_id = rd.reservation_id
+               AND first_relation.min_device_order = rd.device_order
+        ) primary_relation ON primary_relation.reservation_id = r.id
+    </sql>
+
+    <!--
+        批量读取预约关联设备顺序。
+        列表、详情和动作回包统一依赖这里的 `device_order` 组装 `devices[]` 与主设备兼容字段，
+        从而让 reservation_device 成为正式读真相，而不是让服务层回退到旧列猜测设备顺序。
+    -->
+    <select id="findDeviceRelationsByReservationIds" resultType="com.jhun.backend.entity.ReservationDevice">
+        SELECT rd.id, rd.reservation_id, rd.device_id, rd.device_order, rd.created_at
+        FROM reservation_device rd
+        WHERE rd.reservation_id IN
+        <foreach collection="reservationIds" item="reservationId" open="(" separator="," close=")">
+            #{reservationId}
+        </foreach>
+        ORDER BY rd.reservation_id ASC, rd.device_order ASC, rd.created_at ASC
+    </select>
+
+    <!--
         查询预约列表。
         当 userId 传入时，列表只返回当前普通用户自己的预约；管理角色传空时则保留管理端审计所需的全量视角。
         后台列表优先按创建时间倒序返回最近新建的预约，避免全量历史数据把当前刚创建的联调样本挤出首页，
         同时再用 start_time 做次级排序，保证创建时间相同的记录仍有稳定顺序。
     -->
     <select id="findPageByConditions" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
         WHERE 1 = 1
           <if test="userId != null and userId != ''">
-              AND user_id = #{userId}
+              AND r.user_id = #{userId}
           </if>
-        ORDER BY created_at DESC, start_time DESC
+        ORDER BY r.created_at DESC, r.start_time DESC
         LIMIT #{limit} OFFSET #{offset}
     </select>
 
@@ -36,19 +81,45 @@
     </select>
 
     <!--
+        查询单条预约聚合。
+        详情、动作回包与后续借还链路都应该从这里拿到“关联表优先”的主设备兼容投影，
+        不能继续直接依赖 reservation 表旧列。
+    -->
+    <select id="findAggregateById" resultType="com.jhun.backend.entity.Reservation">
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.id = #{reservationId}
+        LIMIT 1
+    </select>
+
+    <!--
         查询同设备同时间段内的有效预约。
         仅统计仍会占用时间段的预约状态，已拒绝、已取消、已过期记录不会阻塞新的预约创建。
     -->
     <select id="findConflictingReservations" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE device_id = #{deviceId}
-          AND status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
-          AND start_time &lt; #{endTime}
-          AND end_time &gt; #{startTime}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE (
+                EXISTS (
+                    SELECT 1
+                    FROM reservation_device rd
+                    WHERE rd.reservation_id = r.id
+                      AND rd.device_id = #{deviceId}
+                )
+                OR (
+                    NOT EXISTS (
+                        SELECT 1
+                        FROM reservation_device rd
+                        WHERE rd.reservation_id = r.id
+                    )
+                    AND r.device_id = #{deviceId}
+                )
+            )
+          AND r.status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
+          AND r.start_time &lt; #{endTime}
+          AND r.end_time &gt; #{startTime}
     </select>
 
     <!--
@@ -57,11 +128,26 @@
     -->
     <select id="countActiveReservationsByDeviceAndTimeRange" resultType="long">
         SELECT COUNT(1)
-        FROM reservation
-        WHERE device_id = #{deviceId}
-          AND status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
-          AND start_time &lt; #{endTime}
-          AND end_time &gt; #{startTime}
+        FROM reservation r
+        WHERE (
+                EXISTS (
+                    SELECT 1
+                    FROM reservation_device rd
+                    WHERE rd.reservation_id = r.id
+                      AND rd.device_id = #{deviceId}
+                )
+                OR (
+                    NOT EXISTS (
+                        SELECT 1
+                        FROM reservation_device rd
+                        WHERE rd.reservation_id = r.id
+                    )
+                    AND r.device_id = #{deviceId}
+                )
+            )
+          AND r.status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
+          AND r.start_time &lt; #{endTime}
+          AND r.end_time &gt; #{startTime}
     </select>
 
     <!--
@@ -87,72 +173,60 @@
 
     <!-- 查询超过 48 小时仍待审核的预约，用于 C-01 审核超时提醒。 -->
     <select id="findAuditPendingBefore" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL')
-          AND created_at &lt;= #{threshold}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL')
+          AND r.created_at &lt;= #{threshold}
     </select>
 
     <!-- 查询超过 72 小时仍待审核的预约，用于 C-02 自动过期。 -->
     <select id="findAuditPendingForExpireBefore" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL')
-          AND created_at &lt;= #{threshold}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL')
+          AND r.created_at &lt;= #{threshold}
     </select>
 
     <!-- 查询签到截止时间已过但仍未签到的预约，用于 C-03 签到超时处理。 -->
     <select id="findApprovedNotCheckedInBefore" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE status = 'APPROVED'
-          AND sign_status = 'NOT_CHECKED_IN'
-          AND start_time &lt;= #{deadline}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.status = 'APPROVED'
+          AND r.sign_status = 'NOT_CHECKED_IN'
+          AND r.start_time &lt;= #{deadline}
     </select>
 
     <!-- 查询已签到但超过 2 小时仍未确认借用的预约，用于 C-04 转待人工处理。 -->
     <select id="findCheckedInBorrowConfirmTimeoutBefore" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE status = 'APPROVED'
-          AND sign_status IN ('CHECKED_IN', 'CHECKED_IN_TIMEOUT')
-          AND checked_in_at IS NOT NULL
-          AND checked_in_at &lt;= #{deadline}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.status = 'APPROVED'
+          AND r.sign_status IN ('CHECKED_IN', 'CHECKED_IN_TIMEOUT')
+          AND r.checked_in_at IS NOT NULL
+          AND r.checked_in_at &lt;= #{deadline}
     </select>
 
     <!-- 查询待人工处理超过 24 小时的预约，用于自动取消兜底。 -->
     <select id="findPendingManualBefore" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE status = 'PENDING_MANUAL'
-          AND updated_at &lt;= #{deadline}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.status = 'PENDING_MANUAL'
+          AND r.updated_at &lt;= #{deadline}
     </select>
 
     <!-- 查询 30 分钟内即将开始的审批通过预约，用于 C-11 预约提醒。 -->
     <select id="findApprovedStartingBetween" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE status = 'APPROVED'
-          AND start_time &gt;= #{start}
-          AND start_time &lt;= #{end}
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE r.status = 'APPROVED'
+          AND r.start_time &gt;= #{start}
+          AND r.start_time &lt;= #{end}
     </select>
 
     <!--
@@ -160,14 +234,27 @@
         设备进入 MAINTENANCE 时，这批用户已经获得使用资格，是最需要被提前提醒的受影响对象。
     -->
     <select id="findApprovedFutureReservationsByDeviceId" resultType="com.jhun.backend.entity.Reservation">
-        SELECT id, batch_id, user_id, created_by, reservation_mode, device_id, start_time, end_time, purpose, status,
-               approval_mode_snapshot, remark, device_approver_id, device_approved_at, device_approval_remark,
-               system_approver_id, system_approved_at, system_approval_remark, sign_status, checked_in_at,
-               cancel_reason, cancel_time, created_at, updated_at
-        FROM reservation
-        WHERE device_id = #{deviceId}
-          AND status = 'APPROVED'
-          AND start_time &gt;= #{start}
-        ORDER BY start_time ASC
+        SELECT <include refid="reservationAggregateColumns"/>
+        FROM reservation r
+        <include refid="primaryRelationJoin"/>
+        WHERE (
+                EXISTS (
+                    SELECT 1
+                    FROM reservation_device rd
+                    WHERE rd.reservation_id = r.id
+                      AND rd.device_id = #{deviceId}
+                )
+                OR (
+                    NOT EXISTS (
+                        SELECT 1
+                        FROM reservation_device rd
+                        WHERE rd.reservation_id = r.id
+                    )
+                    AND r.device_id = #{deviceId}
+                )
+            )
+          AND r.status = 'APPROVED'
+          AND r.start_time &gt;= #{start}
+        ORDER BY r.start_time ASC
     </select>
 </mapper>

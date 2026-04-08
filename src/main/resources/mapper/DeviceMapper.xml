@@ -24,6 +24,73 @@
     </select>
 
     <!--
+        统一可预约设备搜索的基础过滤条件。
+        创建页只能看到静态状态可预约且目标时间窗无冲突的设备；
+        关键字同时命中设备名称与分类名称，分类过滤则允许服务层先把父节点展开为“当前节点 + 全部后代”的 ID 集合。
+    -->
+    <sql id="reservableDeviceWhereClause">
+        FROM device d
+        INNER JOIN device_category dc ON dc.id = d.category_id
+        WHERE d.status = 'AVAILABLE'
+          <if test="keyword != null and keyword != ''">
+              AND (
+                  LOWER(d.name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+                  OR LOWER(dc.name) LIKE CONCAT('%', LOWER(#{keyword}), '%')
+              )
+          </if>
+          <if test="categoryIds != null and categoryIds.size() > 0">
+              AND d.category_id IN
+              <foreach collection="categoryIds" item="categoryId" open="(" separator="," close=")">
+                  #{categoryId}
+              </foreach>
+          </if>
+          AND NOT EXISTS (
+              SELECT 1
+              FROM reservation r
+              WHERE r.status IN ('PENDING_DEVICE_APPROVAL', 'PENDING_SYSTEM_APPROVAL', 'PENDING_MANUAL', 'APPROVED')
+                AND r.start_time &lt; #{endTime}
+                AND r.end_time &gt; #{startTime}
+                AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM reservation_device rd
+                        WHERE rd.reservation_id = r.id
+                          AND rd.device_id = d.id
+                    )
+                    OR (
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM reservation_device rd
+                            WHERE rd.reservation_id = r.id
+                        )
+                        AND r.device_id = d.id
+                    )
+                )
+          )
+    </sql>
+
+    <!--
+        分页查询可预约设备。
+        排序固定为 created_at DESC, id ASC，确保分页在同一批搜索条件下具备稳定顺序。
+    -->
+    <select id="findReservableDevices" resultType="com.jhun.backend.entity.Device">
+        SELECT d.id, d.name, d.device_number, d.category_id, d.status, d.approval_mode_override, d.image_url, d.description,
+               d.purchase_date, d.location, d.status_change_reason, d.created_at, d.updated_at
+        <include refid="reservableDeviceWhereClause"/>
+        ORDER BY d.created_at DESC, d.id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!--
+        统计可预约设备总数。
+        该语句与分页查询共用完全一致的过滤块，避免前端搜索结果出现 total 与 records 不一致。
+    -->
+    <select id="countReservableDevices" resultType="long">
+        SELECT COUNT(1)
+        <include refid="reservableDeviceWhereClause"/>
+    </select>
+
+    <!--
         仅当设备当前状态与预期状态一致时才允许切换状态，
         用受影响行数作为 CAS 结果，避免并发借出/归还时重复写状态日志或覆盖其他事务的状态流转。
     -->

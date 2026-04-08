@@ -59,6 +59,13 @@ cd <当前后端仓库目录>
 
 如需覆盖数据源、Redis 或 SMTP 配置，优先使用环境变量或本地私有配置，不要把真实密钥写回仓库。
 
+若你要在本机启用 reservation-create internal seed，还需要显式提供：
+
+- `INTERNAL_SEED_RESERVATION_CREATE_ENABLED=true`
+- `INTERNAL_RESERVATION_CREATE_SEED_TOKEN=<token>`
+
+其中该入口默认只允许本机回环地址访问，且不会默认回传管理员明文密码。
+
 ### 3. 在 IDEA 中直接启动 Qwen 文本 AI，按需启用讯飞语音
 
 - 仓库已提供共享运行配置：`.run/DeviceManagementBackend Dev Qwen.run.xml`

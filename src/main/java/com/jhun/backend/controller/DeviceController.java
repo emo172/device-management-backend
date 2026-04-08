@@ -8,9 +8,11 @@ import com.jhun.backend.dto.device.DevicePageResponse;
 import com.jhun.backend.dto.device.DeviceResponse;
 import com.jhun.backend.dto.device.UpdateDeviceStatusRequest;
 import com.jhun.backend.dto.device.UpdateDeviceRequest;
+import java.time.LocalDateTime;
 import com.jhun.backend.service.DeviceService;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -72,6 +74,24 @@ public class DeviceController {
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(required = false) String categoryName) {
         return Result.success(deviceService.listDevices(page, size, categoryName));
+    }
+
+    /**
+     * 按预约时间窗搜索可预约设备。
+     * <p>
+     * 该接口服务创建设备预约页，固定返回“静态状态可预约且目标时间窗无冲突”的设备，
+     * 同时支持关键字命中设备名/分类名以及分类后代展开，但不会改变旧 `/api/devices` 的浏览语义。
+     */
+    @GetMapping("/reservable")
+    public Result<DevicePageResponse> searchReservableDevices(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startTime,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endTime,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String categoryId,
+            @RequestParam(defaultValue = "true") boolean includeDescendants,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        return Result.success(deviceService.searchReservableDevices(startTime, endTime, q, categoryId, includeDescendants, page, size));
     }
 
     @GetMapping("/{id}")

@@ -19,7 +19,12 @@ public class BorrowRecord {
     @TableId(type = IdType.INPUT)
     private String id;
 
-    /** 关联预约 ID，同一预约只能产生一条借还记录。 */
+    /**
+     * 关联预约 ID。
+     * <p>
+     * T5 起多设备预约会在内部按设备扇出为多条 borrow_record，
+     * 因此这里表达的是“所属预约聚合”，而不是“同一预约只能有一条借还记录”。
+     */
     @TableField("reservation_id")
     private String reservationId;
 
