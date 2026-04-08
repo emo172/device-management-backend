@@ -128,8 +128,8 @@ WHERE u.username = 'your-system-admin';
 
 ## 自动验证命令
 
-reservation-create 的文档主顺序仍固定为“后端测试 → 前端 type-check/build/unit → 浏览器 E2E”。
-其中第 3 步浏览器 E2E 内允许包含 reservation-create 的 seed 准备动作；seed 脚本会直接命中 `POST /api/internal/seeds/reservation-create`，并在当前环境下自动启动或复用可用 backend，因此不需要再额外补跑计划外的手动 backend 启动步骤。
+reservation-create 的文档主顺序仍固定为“后端测试 → 前端 type-check/build/unit → 前端 seed 准备 → 浏览器 E2E”。
+其中 reservation-create seed 脚本会直接命中 `POST /api/internal/seeds/reservation-create`；该入口现在要求“共享令牌 + loopback”双重保护，因此脚本必须显式携带 `X-Internal-Seed-Token`，并在本机调用后端。
 
 ### 第 1 步：后端测试
 
@@ -145,21 +145,25 @@ cd <当前前端仓库目录>
 npm run type-check && npm run build && npm run test:unit
 ```
 
-### 第 3 步：浏览器 E2E（reservation-create）
+### 第 3 步：前端 seed 准备（reservation-create）
 
 ```bash
 cd <当前前端仓库目录>
 
-node scripts/e2e/seed-reservation-create.mjs --scenario happy-path
-node scripts/e2e/seed-reservation-create.mjs --scenario atomic-failure
-PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npx playwright test e2e/reservation-create.spec.ts --config=playwright.reservation.config.mjs
+INTERNAL_RESERVATION_CREATE_SEED_TOKEN=<token> RESERVATION_CREATE_BACKEND_URL=http://127.0.0.1:18083 node scripts/e2e/seed-reservation-create.mjs --scenario happy-path
+INTERNAL_RESERVATION_CREATE_SEED_TOKEN=<token> RESERVATION_CREATE_BACKEND_URL=http://127.0.0.1:18083 node scripts/e2e/seed-reservation-create.mjs --scenario atomic-failure
+
+INTERNAL_RESERVATION_CREATE_SEED_TOKEN=<token> PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome \
+RESERVATION_CREATE_BACKEND_URL=http://127.0.0.1:18083 npx playwright test --config=playwright.reservation.config.mjs
 ```
 
 补充说明：
 
-- `seed-reservation-create.mjs` 现在会直接调用真实 backend internal seed 入口准备 `happy-path` / `atomic-failure` 数据，并把真实账号、设备、时间窗和冲突信息写入稳定 seed 产物，供 Playwright 读取。
-- 当前环境 Playwright 必须显式带上 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome`。
-- 本轮真实自动验证复用了脚本托管的 backend 实例：`http://localhost:18080`。
+- `seed-reservation-create.mjs` 会把真实账号、设备、时间窗和冲突信息写入 `.tmp/reservation-create-seed/<scenario>.json`，供后续浏览器脚本或人工联调复用。
+- 后端若以 `test` profile 本地启动，需要同时提供 `INTERNAL_SEED_RESERVATION_CREATE_ENABLED=true` 与 `INTERNAL_RESERVATION_CREATE_SEED_TOKEN=<token>`。
+- Node 侧 seed 脚本要求绝对 backend URL；若当前前端环境把 `VITE_API_BASE_URL` 配成相对路径，请额外设置 `RESERVATION_CREATE_BACKEND_URL=http://localhost:8080`。
+- `playwright.reservation.config.mjs` 默认把前端源站固定在 `http://localhost:5173`，以匹配当前后端 CORS 白名单；若联调时改端口，必须同步评估 CORS 放行列表。
+- `e2e/reservation-create.spec.ts` 会在每条用例开始前刷新对应 scenario 的种子，避免 `atomic-failure` 的冲突样本反向污染 `happy-path`。
 
 ## 最新自动验证记录
 
@@ -168,10 +172,16 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npx playwright test e
 - 后端：`./mvnw clean verify` 通过。
 - 前端：`npm run type-check && npm run build && npm run test:unit` 通过。
 - 前端：`npm run type-check && npm run build` 通过。
-- 前端：`node scripts/e2e/seed-reservation-create.mjs --scenario happy-path` 通过，真实 backend seed/startup 复用 `http://localhost:18080`。
-- 前端：`node scripts/e2e/seed-reservation-create.mjs --scenario atomic-failure` 通过，复用同一 backend 并返回真实冲突设备信息。
-- 前端：`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npx playwright test e2e/reservation-create.spec.ts --config=playwright.reservation.config.mjs` 通过，汇总为 `2 passed`。
-- 前端构建仍会输出 Vite chunk 体积告警，但不影响本次构建成功与 reservation-create 主链路验收结论。
+
+### 2026-04-08
+
+- 后端：真实 MySQL 旧库升级演练通过；应用可启动、`reservation_device` 自动补齐、`reservation.device_id` 放宽为可空，且旧预约样本成功回填到 `reservation_device`。
+- 前端：`npm run type-check` 通过。
+- 前端：`npm run build` 通过。
+- 前端：`npm run test:unit` 通过，汇总为 `106 files / 682 tests passed`。
+- 前端：`INTERNAL_RESERVATION_CREATE_SEED_TOKEN=test-seed-token RESERVATION_CREATE_BACKEND_URL=http://127.0.0.1:18083 node scripts/e2e/seed-reservation-create.mjs --scenario happy-path` 通过。
+- 前端：`INTERNAL_RESERVATION_CREATE_SEED_TOKEN=test-seed-token RESERVATION_CREATE_BACKEND_URL=http://127.0.0.1:18083 node scripts/e2e/seed-reservation-create.mjs --scenario atomic-failure` 通过。
+- 前端：`INTERNAL_RESERVATION_CREATE_SEED_TOKEN=test-seed-token PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome RESERVATION_CREATE_BACKEND_URL=http://127.0.0.1:18083 npx playwright test --config=playwright.reservation.config.mjs` 通过，汇总为 `2 passed`。
 
 ## 人工冒烟顺序
 
@@ -201,3 +211,4 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npx playwright test e
 - 通知列表兼容接口保持 `GET /api/notifications` 数组返回；服务端分页与通知类型筛选通过 `GET /api/notifications/page` 承接
 - 通知中心当前采用轮询刷新，不提供 WebSocket / SSE 实时推送
 - 若本地环境未准备 MySQL / Redis，或无法确认 smoke 账号明文密码，则只能先完成自动化验证，人工冒烟需要待环境补齐后再执行
+- reservation-create internal seed 默认要求本机 loopback 访问；若联调链路经过 Vite/Nginx 代理、Docker bridge 或本机局域网 IP，需要在受控环境下显式评估是否关闭 `internal.seed.reservation-create.loopback-only`
