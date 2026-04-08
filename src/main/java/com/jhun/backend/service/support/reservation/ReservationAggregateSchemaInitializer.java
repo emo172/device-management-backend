@@ -37,6 +37,7 @@ public class ReservationAggregateSchemaInitializer implements ApplicationRunner 
     private static final String RESERVATION_TABLE = "reservation";
     private static final String BORROW_RECORD_TABLE = "borrow_record";
     private static final String LEGACY_BORROW_RECORD_UNIQUE_NAME = "uk_borrow_reservation_id";
+    private static final String BORROW_RECORD_COMPOSITE_UNIQUE_NAME = "uk_borrow_reservation_device";
 
     private final JdbcTemplate jdbcTemplate;
     private final DataSource dataSource;
@@ -104,24 +105,30 @@ public class ReservationAggregateSchemaInitializer implements ApplicationRunner 
      */
     private void ensureBorrowRecordCompositeUniqueConstraint(String databaseProduct) {
         Map<String, List<String>> uniqueIndexes = loadUniqueIndexes(BORROW_RECORD_TABLE);
-        if (containsIndexColumns(uniqueIndexes, "reservation_id", "device_id")) {
-            return;
-        }
         String legacySingleReservationIndex = findIndexNameByColumns(uniqueIndexes, "reservation_id");
         if (legacySingleReservationIndex == null && containsIndexNamePrefix(uniqueIndexes, LEGACY_BORROW_RECORD_UNIQUE_NAME)) {
             legacySingleReservationIndex = LEGACY_BORROW_RECORD_UNIQUE_NAME;
         }
 
         /*
-         * MySQL 下旧单列唯一索引 `uk_borrow_reservation_id` 同时承担 `borrow_record.reservation_id`
-         * 外键的前导索引角色；如果直接 DROP INDEX，会被 InnoDB 以“foreign key still needs this index”拒绝。
-         * 因此必须先补上新的 `(reservation_id, device_id)` 复合唯一，让外键索引需求由新索引承接，
-         * 然后再安全移除旧单列唯一。
+         * 真实 MySQL 库里可能已经存在同名唯一约束，但 JDBC 元数据对列序或约束呈现方式不一定与测试库完全一致。
+         * 因此这里先按目标名称兜底，避免已经升级完成的库在重启时再次执行 ADD CONSTRAINT。
+         * 但即便新复合唯一已经存在，也仍然要继续清理旧的单列唯一，否则半迁移状态下依旧无法写入同预约多设备记录。
          */
-        jdbcTemplate.execute(
-                "ALTER TABLE borrow_record ADD CONSTRAINT uk_borrow_reservation_device UNIQUE (reservation_id, device_id)");
+        boolean compositeUniqueExists = containsIndexName(uniqueIndexes, BORROW_RECORD_COMPOSITE_UNIQUE_NAME)
+                || containsIndexColumns(uniqueIndexes, "reservation_id", "device_id");
+        if (!compositeUniqueExists) {
+            jdbcTemplate.execute(
+                    "ALTER TABLE borrow_record ADD CONSTRAINT " + BORROW_RECORD_COMPOSITE_UNIQUE_NAME
+                            + " UNIQUE (reservation_id, device_id)");
+        }
 
         if (legacySingleReservationIndex != null) {
+            /*
+             * MySQL 下旧单列唯一索引 `uk_borrow_reservation_id` 同时承担 `borrow_record.reservation_id`
+             * 外键的前导索引角色；因此无论新复合唯一是这次补上的，还是库里原本就已存在，
+             * 只要确认复合唯一可用，就应继续移除旧单列唯一，避免它继续拦截同预约多设备写入。
+             */
             dropUniqueConstraint(databaseProduct, BORROW_RECORD_TABLE, legacySingleReservationIndex);
         }
     }
@@ -268,6 +275,13 @@ public class ReservationAggregateSchemaInitializer implements ApplicationRunner 
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(null);
+    }
+
+    private boolean containsIndexName(Map<String, List<String>> uniqueIndexes, String expectedName) {
+        String normalizedName = expectedName.toLowerCase(Locale.ROOT);
+        return uniqueIndexes.keySet().stream()
+                .map(indexName -> indexName.toLowerCase(Locale.ROOT))
+                .anyMatch(indexName -> indexName.equals(normalizedName));
     }
 
     private boolean containsIndexNamePrefix(Map<String, List<String>> uniqueIndexes, String expectedPrefix) {

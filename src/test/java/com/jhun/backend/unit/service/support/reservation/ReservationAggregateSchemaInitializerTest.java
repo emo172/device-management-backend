@@ -1,6 +1,7 @@
 package com.jhun.backend.unit.service.support.reservation;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,8 +34,7 @@ class ReservationAggregateSchemaInitializerTest {
      */
     @Test
     void upgradesLegacySchemaToReservationAggregateModel() throws Exception {
-        JdbcDataSource dataSource = new JdbcDataSource();
-        dataSource.setURL("jdbc:h2:mem:reservation-aggregate-migration-test;MODE=MySQL;DB_CLOSE_DELAY=-1");
+        JdbcDataSource dataSource = createDataSource("reservation-aggregate-migration-test");
         JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
         createLegacySchema(jdbcTemplate);
 
@@ -81,6 +81,51 @@ class ReservationAggregateSchemaInitializerTest {
         assertEquals(2L, borrowCount == null ? 0L : borrowCount);
         assertFalse(hasUniqueIndex(dataSource, "borrow_record", "reservation_id"));
         assertTrue(hasUniqueIndex(dataSource, "borrow_record", "reservation_id", "device_id"));
+    }
+
+    /**
+     * 启动器重复运行时不应再次创建同名复合唯一约束，避免已升级完成的数据库在重启时直接启动失败。
+     */
+    @Test
+    void rerunInitializerDoesNotRecreateCompositeUniqueConstraint() throws Exception {
+        JdbcDataSource dataSource = createDataSource("reservation-aggregate-rerun-test");
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        createLegacySchema(jdbcTemplate);
+
+        ReservationAggregateSchemaInitializer initializer =
+                new ReservationAggregateSchemaInitializer(jdbcTemplate, dataSource);
+
+        initializer.run(new DefaultApplicationArguments(new String[0]));
+
+        assertDoesNotThrow(() -> initializer.run(new DefaultApplicationArguments(new String[0])));
+        assertFalse(hasUniqueIndex(dataSource, "borrow_record", "reservation_id"));
+        assertTrue(hasUniqueIndex(dataSource, "borrow_record", "reservation_id", "device_id"));
+    }
+
+    /**
+     * 已存在复合唯一但旧单列唯一尚未删除时，启动器仍应继续完成清理，避免数据库停留在“可启动但不可多设备写入”的半迁移状态。
+     */
+    @Test
+    void removesLegacySingleUniqueWhenCompositeUniqueAlreadyExists() throws Exception {
+        JdbcDataSource dataSource = createDataSource("reservation-aggregate-half-migrated-test");
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        createLegacySchema(jdbcTemplate);
+        jdbcTemplate.execute(
+                "ALTER TABLE borrow_record ADD CONSTRAINT uk_borrow_reservation_device UNIQUE (reservation_id, device_id)");
+
+        ReservationAggregateSchemaInitializer initializer =
+                new ReservationAggregateSchemaInitializer(jdbcTemplate, dataSource);
+
+        initializer.run(new DefaultApplicationArguments(new String[0]));
+
+        assertFalse(hasUniqueIndex(dataSource, "borrow_record", "reservation_id"));
+        assertTrue(hasUniqueIndex(dataSource, "borrow_record", "reservation_id", "device_id"));
+    }
+
+    private JdbcDataSource createDataSource(String databaseName) {
+        JdbcDataSource dataSource = new JdbcDataSource();
+        dataSource.setURL("jdbc:h2:mem:" + databaseName + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
+        return dataSource;
     }
 
     private void createLegacySchema(JdbcTemplate jdbcTemplate) {
