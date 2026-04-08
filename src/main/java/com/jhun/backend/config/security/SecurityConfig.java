@@ -60,8 +60,9 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         /*
                          * 预检请求和 `/files/devices/**` 都属于前后端联调基础设施：
-                         * 前者要先于鉴权完成浏览器协商，后者只承载设备图片公开访问，
-                         * 因此这里必须精确放行设备图片目录，而不能继续把整个上传根目录匿名暴露出去。
+                         * 前者要先于鉴权完成浏览器协商，后者只承载设备图片公开访问；
+                         * reservation-create internal seed 虽然保留匿名入口以支持本地自举，但控制器内部仍会再做共享令牌 + loopback 双重限制，
+                         * 因此这里必须精确放行所需路径，而不能继续把整个上传根目录匿名暴露出去。
                          */
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(

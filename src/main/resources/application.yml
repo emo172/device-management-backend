@@ -106,3 +106,9 @@ internal:
       # reservation-create internal seed 默认关闭；只有在 dev/test 显式打开时，控制器与服务 Bean 才会注册。
       # 这样既能满足浏览器联调从 0 自举管理员和冲突数据的需求，也不会把造数入口暴露到生产默认路径。
       enabled: false
+      # 默认仅允许本机回环地址访问，避免共享 dev/test 环境在误开开关后把 internal seed 暴露给外部网络。
+      loopback-only: true
+      # 访问令牌必须通过环境变量或环境专属配置覆盖；只要入口被启用，这个值就不能为空。
+      access-token: ${INTERNAL_RESERVATION_CREATE_SEED_TOKEN:}
+      # 默认不回传管理员账号明文密码；如确有封闭环境下的联调需要，必须显式开启并自行承担凭据暴露风险。
+      expose-admin-passwords: false

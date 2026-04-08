@@ -16,6 +16,7 @@ import com.jhun.backend.mapper.DeviceMapper;
 import com.jhun.backend.mapper.ReservationDeviceMapper;
 import com.jhun.backend.mapper.ReservationMapper;
 import com.jhun.backend.mapper.UserMapper;
+import com.jhun.backend.service.support.reservation.ReservationCreateSeedProperties;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,8 +39,13 @@ import org.springframework.web.context.WebApplicationContext;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@TestPropertySource(properties = "internal.seed.reservation-create.enabled=true")
+@TestPropertySource(properties = {
+        "internal.seed.reservation-create.enabled=true",
+        "internal.seed.reservation-create.access-token=test-seed-token"
+})
 class ReservationCreateSeedInternalControllerIntegrationTest {
+
+    private static final String SEED_ACCESS_TOKEN = "test-seed-token";
 
     @Autowired
     private WebApplicationContext webApplicationContext;
@@ -80,6 +86,7 @@ class ReservationCreateSeedInternalControllerIntegrationTest {
         long beforeReservationCount = reservationMapper.selectCount(null);
 
         MvcResult result = mockMvc.perform(post("/api/internal/seeds/reservation-create")
+                        .header(ReservationCreateSeedProperties.ACCESS_TOKEN_HEADER, SEED_ACCESS_TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -114,6 +121,9 @@ class ReservationCreateSeedInternalControllerIntegrationTest {
         assertNotNull(deviceMapper.selectById(firstDeviceId));
         assertNotNull(deviceMapper.selectById(secondDeviceId));
         assertTrue(data.path("conflictReservationId").isNull());
+        assertTrue(data.path("userAccount").path("password").isTextual());
+        assertTrue(data.path("deviceAdminAccount").path("password").isNull());
+        assertTrue(data.path("systemAdminAccount").path("password").isNull());
 
         JsonNode reservationRequest = data.path("reservationRequest");
         assertEquals(firstDeviceId, reservationRequest.path("deviceIds").get(0).asText());
@@ -130,6 +140,7 @@ class ReservationCreateSeedInternalControllerIntegrationTest {
         long beforeReservationCount = reservationMapper.selectCount(null);
 
         MvcResult result = mockMvc.perform(post("/api/internal/seeds/reservation-create")
+                        .header(ReservationCreateSeedProperties.ACCESS_TOKEN_HEADER, SEED_ACCESS_TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -158,6 +169,46 @@ class ReservationCreateSeedInternalControllerIntegrationTest {
         assertEquals(1L, reservationDeviceMapper.countByReservationId(conflictReservationId));
         assertEquals(blockedDeviceId, reservationDeviceMapper.findByReservationId(conflictReservationId).getFirst().getDeviceId());
         assertEquals(1, reservationMapper.findConflictingReservations(blockedDeviceId, startTime, endTime).size());
+    }
+
+    /**
+     * 验证 internal seed 开关即使已打开，也默认只接受本机回环地址调用。
+     * <p>
+     * 这样可以避免共享 dev/test 环境在误开配置后，把造数接口直接暴露给外部网络。
+     */
+    @Test
+    void rejectsNonLoopbackRequestsWhenSeedEnabled() throws Exception {
+        mockMvc.perform(post("/api/internal/seeds/reservation-create")
+                        .header(ReservationCreateSeedProperties.ACCESS_TOKEN_HEADER, SEED_ACCESS_TOKEN)
+                        .with(request -> {
+                            request.setRemoteAddr("10.10.10.10");
+                            return request;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scenario": "happy-path"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("internal seed 仅允许本机访问"));
+    }
+
+    /**
+     * 验证缺少或错误的共享令牌时，请求会在进入造数逻辑前被拒绝。
+     */
+    @Test
+    void rejectsRequestsWithInvalidAccessToken() throws Exception {
+        mockMvc.perform(post("/api/internal/seeds/reservation-create")
+                        .header(ReservationCreateSeedProperties.ACCESS_TOKEN_HEADER, "wrong-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scenario": "happy-path"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("internal seed 访问令牌无效"));
     }
 
     private JsonNode readData(MvcResult result) throws Exception {

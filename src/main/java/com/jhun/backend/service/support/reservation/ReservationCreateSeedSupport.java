@@ -43,7 +43,6 @@ public class ReservationCreateSeedSupport {
 
     private static final String HAPPY_PATH_SCENARIO = "happy-path";
     private static final String ATOMIC_FAILURE_SCENARIO = "atomic-failure";
-    private static final String SEED_PASSWORD = "Password123!";
     private static final String DEFAULT_APPROVAL_MODE = "DEVICE_ONLY";
     private static final String AVAILABLE_STATUS = "AVAILABLE";
 
@@ -53,6 +52,7 @@ public class ReservationCreateSeedSupport {
     private final DeviceMapper deviceMapper;
     private final PasswordEncoder passwordEncoder;
     private final ReservationService reservationService;
+    private final ReservationCreateSeedProperties reservationCreateSeedProperties;
 
     public ReservationCreateSeedSupport(
             RoleMapper roleMapper,
@@ -60,13 +60,15 @@ public class ReservationCreateSeedSupport {
             DeviceCategoryMapper deviceCategoryMapper,
             DeviceMapper deviceMapper,
             PasswordEncoder passwordEncoder,
-            ReservationService reservationService) {
+            ReservationService reservationService,
+            ReservationCreateSeedProperties reservationCreateSeedProperties) {
         this.roleMapper = roleMapper;
         this.userMapper = userMapper;
         this.deviceCategoryMapper = deviceCategoryMapper;
         this.deviceMapper = deviceMapper;
         this.passwordEncoder = passwordEncoder;
         this.reservationService = reservationService;
+        this.reservationCreateSeedProperties = reservationCreateSeedProperties;
     }
 
     /**
@@ -148,18 +150,20 @@ public class ReservationCreateSeedSupport {
         }
         String accountSuffix = seedKey.toLowerCase();
         String username = prefix + "-" + accountSuffix;
+        String actualPassword = buildSeedPassword(roleName, seedKey);
         User user = new User();
         user.setId(UuidUtil.randomUuid());
         user.setUsername(username);
         user.setEmail(username + "@example.com");
-        user.setPasswordHash(passwordEncoder.encode(SEED_PASSWORD));
+        user.setPasswordHash(passwordEncoder.encode(actualPassword));
         user.setRoleId(role.getId());
         user.setRealName(realName);
         user.setPhone(buildPhone(seedKey + roleName));
         user.setStatus(1);
         user.setFreezeStatus("NORMAL");
         userMapper.insert(user);
-        return new SeededUser(user, roleName);
+        String exposedPassword = shouldExposePassword(roleName) ? actualPassword : null;
+        return new SeededUser(user, roleName, exposedPassword);
     }
 
     private DeviceCategory createCategory(String seedKey) {
@@ -196,8 +200,30 @@ public class ReservationCreateSeedSupport {
                 seededUser.user().getUsername(),
                 seededUser.user().getEmail(),
                 seededUser.user().getUsername(),
-                SEED_PASSWORD,
+                seededUser.exposedPassword(),
                 seededUser.roleName());
+    }
+
+    /**
+     * 生成一次性联调密码。
+     * <p>
+     * 普通用户密码会直接回传给脚本用于登录联调，因此既要可读又要满足密码复杂度；
+     * 管理员账号即便默认不回传密码，也不应继续共用可猜测的固定弱口令。
+     */
+    private String buildSeedPassword(String roleName, String seedKey) {
+        String roleFragment = roleName.substring(0, Math.min(roleName.length(), 3)).toLowerCase();
+        String randomFragment = UuidUtil.randomUuid().replace("-", "").substring(0, 6);
+        return "Seed-" + roleFragment + "-" + seedKey.toLowerCase() + "-" + randomFragment + "-Aa1!";
+    }
+
+    /**
+     * 默认只暴露普通用户的明文密码。
+     * <p>
+     * reservation-create 浏览器联调主要依赖普通用户登录场景；
+     * 设备管理员和系统管理员账号只需要作为真实数据存在，不应默认通过 seed 响应直接分发其明文口令。
+     */
+    private boolean shouldExposePassword(String roleName) {
+        return "USER".equals(roleName) || reservationCreateSeedProperties.isExposeAdminPasswords();
     }
 
     private ReservationCreateSeedDeviceResponse toDeviceResponse(Device device) {
@@ -209,6 +235,6 @@ public class ReservationCreateSeedSupport {
         return "138" + String.format("%08d", value);
     }
 
-    private record SeededUser(User user, String roleName) {
+    private record SeededUser(User user, String roleName, String exposedPassword) {
     }
 }
