@@ -4,13 +4,12 @@ import com.jhun.backend.service.support.speech.IflytekSpeechProvider;
 import com.jhun.backend.service.support.speech.IflytekSpeechWebSocketClient;
 import com.jhun.backend.service.support.speech.SpeechProvider;
 import jakarta.servlet.MultipartConfigElement;
-import java.util.Locale;
 import org.springframework.boot.servlet.MultipartConfigFactory;
 import org.springframework.boot.servlet.autoconfigure.MultipartProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 
 @Configuration
@@ -18,11 +17,11 @@ import org.springframework.util.unit.DataSize;
 public class SpeechConfig {
 
     @Bean
+    @ConditionalOnProperty(prefix = "speech", name = "enabled", havingValue = "true")
     public SpeechProvider speechProvider(
             SpeechProperties speechProperties,
             IflytekSpeechWebSocketClient iflytekSpeechWebSocketClient) {
-        String providerName = normalizeProviderName(speechProperties.getProvider());
-        if (!IflytekSpeechProvider.IFLYTEK_PROVIDER.equals(providerName)) {
+        if (!speechProperties.isIflytekProviderSelected()) {
             throw new IllegalStateException("当前仅支持 Iflytek 语音 provider：" + speechProperties.getProvider());
         }
         return new IflytekSpeechProvider(speechProperties, iflytekSpeechWebSocketClient);
@@ -62,10 +61,4 @@ public class SpeechConfig {
         return left.toBytes() >= right.toBytes() ? left : right;
     }
 
-    private String normalizeProviderName(String provider) {
-        if (!StringUtils.hasText(provider)) {
-            return IflytekSpeechProvider.IFLYTEK_PROVIDER;
-        }
-        return provider.trim().toLowerCase(Locale.ROOT);
-    }
 }

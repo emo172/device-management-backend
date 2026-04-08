@@ -48,8 +48,9 @@ public class AiController {
     /**
      * 查询当前运行时可用的 AI 能力开关。
      * <p>
-     * 该接口只回传前端当前联调真正需要的两个布尔值，直接复用聊天与语音配置真相源，
-     * 避免把 provider、密钥、区域等内部运行时细节暴露给公开接口。
+     * 该接口只回传前端当前联调真正需要的两个布尔值，并且 `speechEnabled` 必须表示“现在真的可以走通语音转写链路”，
+     * 不能只回显 `speech.enabled` 配置本身；否则前端会把录音入口展示出来，却在用户第一次上传时才发现凭据或 provider 不可用。
+     * 因此这里继续只暴露最小布尔真相，不把 provider、密钥、区域等内部运行时细节泄露给公开接口。
      *
      * @return AI 能力最小响应
      */
@@ -57,7 +58,7 @@ public class AiController {
     public Result<AiCapabilitiesResponse> getCapabilities() {
         return Result.success(new AiCapabilitiesResponse(
                 aiRuntimeProperties.isChatEnabled(),
-                speechProperties.isEnabled()));
+                speechProperties.isTranscriptionAvailable()));
     }
 
     /**

@@ -81,7 +81,31 @@ class AiCapabilitiesIntegrationTest {
                 .andExpect(jsonPath("$.data.chatEnabled").value(aiRuntimeProperties.isChatEnabled()))
                 .andExpect(jsonPath("$.data.ttsEnabled").doesNotExist())
                 .andExpect(jsonPath("$.data.historySpeechEnabled").doesNotExist())
-                .andExpect(jsonPath("$.data.speechEnabled").value(speechProperties.isEnabled()));
+                .andExpect(jsonPath("$.data.speechEnabled").value(speechProperties.isTranscriptionAvailable()));
+    }
+
+    /**
+     * 验证即使显式打开 `speech.enabled`，只要一期讯飞凭据缺失，`speechEnabled` 也必须回落为 `false`。
+     * <p>
+     * 这个场景专门防止接口只回显开关本身，导致前端误展示录音入口，用户第一次真正上传时才发现运行时根本不可用。
+     */
+    @Test
+    void shouldReportSpeechDisabledWhenIflytekCredentialsAreIncomplete() throws Exception {
+        User user = createUser("ai-cap-speech-mis", "ai-capabilities-speech-missing@example.com", "USER");
+        String originalApiSecret = speechProperties.getIflytek().getApiSecret();
+        boolean originalEnabled = speechProperties.isEnabled();
+        try {
+            speechProperties.setEnabled(true);
+            speechProperties.getIflytek().setApiSecret("");
+
+            mockMvc.perform(get("/api/ai/capabilities")
+                            .header("Authorization", bearer(user, "USER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.speechEnabled").value(false));
+        } finally {
+            speechProperties.setEnabled(originalEnabled);
+            speechProperties.getIflytek().setApiSecret(originalApiSecret);
+        }
     }
 
     /**
