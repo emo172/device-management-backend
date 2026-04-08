@@ -128,27 +128,50 @@ WHERE u.username = 'your-system-admin';
 
 ## 自动验证命令
 
-### 后端
+reservation-create 的文档主顺序仍固定为“后端测试 → 前端 type-check/build/unit → 浏览器 E2E”。
+其中第 3 步浏览器 E2E 内允许包含 reservation-create 的 seed 准备动作；seed 脚本会直接命中 `POST /api/internal/seeds/reservation-create`，并在当前环境下自动启动或复用可用 backend，因此不需要再额外补跑计划外的手动 backend 启动步骤。
+
+### 第 1 步：后端测试
 
 ```bash
 cd <当前后端仓库目录>
 ./mvnw clean verify
 ```
 
-### 前端
+### 第 2 步：前端静态验证与单元测试
 
 ```bash
 cd <当前前端仓库目录>
 npm run type-check && npm run build && npm run test:unit
 ```
 
+### 第 3 步：浏览器 E2E（reservation-create）
+
+```bash
+cd <当前前端仓库目录>
+
+node scripts/e2e/seed-reservation-create.mjs --scenario happy-path
+node scripts/e2e/seed-reservation-create.mjs --scenario atomic-failure
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npx playwright test e2e/reservation-create.spec.ts --config=playwright.reservation.config.mjs
+```
+
+补充说明：
+
+- `seed-reservation-create.mjs` 现在会直接调用真实 backend internal seed 入口准备 `happy-path` / `atomic-failure` 数据，并把真实账号、设备、时间窗和冲突信息写入稳定 seed 产物，供 Playwright 读取。
+- 当前环境 Playwright 必须显式带上 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome`。
+- 本轮真实自动验证复用了脚本托管的 backend 实例：`http://localhost:18080`。
+
 ## 最新自动验证记录
 
-### 2026-03-20
+### 2026-04-07
 
-- 后端：`./mvnw clean verify` 通过，统一汇总为 `Tests run: 147, Failures: 0, Errors: 0, Skipped: 0`
-- 前端：`npm run type-check && npm run build && npm run test:unit` 通过，`95` 个测试文件、`337` 个测试全部通过
-- 前端构建存在 Vite chunk 体积告警，但本次不影响构建成功与主链路验收结论
+- 后端：`./mvnw clean verify` 通过。
+- 前端：`npm run type-check && npm run build && npm run test:unit` 通过。
+- 前端：`npm run type-check && npm run build` 通过。
+- 前端：`node scripts/e2e/seed-reservation-create.mjs --scenario happy-path` 通过，真实 backend seed/startup 复用 `http://localhost:18080`。
+- 前端：`node scripts/e2e/seed-reservation-create.mjs --scenario atomic-failure` 通过，复用同一 backend 并返回真实冲突设备信息。
+- 前端：`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome npx playwright test e2e/reservation-create.spec.ts --config=playwright.reservation.config.mjs` 通过，汇总为 `2 passed`。
+- 前端构建仍会输出 Vite chunk 体积告警，但不影响本次构建成功与 reservation-create 主链路验收结论。
 
 ## 人工冒烟顺序
 
