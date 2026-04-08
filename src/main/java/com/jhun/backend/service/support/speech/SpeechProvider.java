@@ -3,14 +3,12 @@ package com.jhun.backend.service.support.speech;
 /**
  * 语音 provider 抽象。
  * <p>
- * 该接口独立于现有文本 AI provider，专门承接录音转写和文本转语音两类能力，
- * 防止后续把音频能力塞回文本 AI 对话链路。
+ * Task 2 起 provider 骨架只保留转写职责，
+ * 先从抽象层删掉历史播报/语音输出入口，避免后续 provider 改造时还要兼容已经废弃的合成签名。
  */
 public interface SpeechProvider {
 
     String providerName();
 
     SpeechTranscriptionResult transcribe(SpeechTranscriptionRequest request);
-
-    SpeechSynthesisResult synthesize(SpeechSynthesisRequest request);
 }

@@ -1,27 +1,23 @@
 package com.jhun.backend.config.speech;
 
+import java.util.Locale;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.util.StringUtils;
 
-/**
- * 语音配置属性。
- * <p>
- * 当前阶段显式暴露 `speech.enabled`、provider、上传大小限制与 Azure Speech 凭据占位。
- * 中文 locale、浏览器录音格式和 TTS 输出格式继续由语音契约常量统一固化，避免运行时配置改写联调口径。
- */
 @ConfigurationProperties(prefix = "speech")
 public class SpeechProperties {
 
     private boolean enabled = false;
 
-    private String provider = "azure";
+    private String provider = "iflytek";
 
-    private AzureProperties azure = new AzureProperties();
+    private IflytekProperties iflytek = new IflytekProperties();
 
     /**
      * 浏览器录音上传大小上限。
      * <p>
-     * 这里默认固定为 10MB，与 task 2 的接口契约保持一致；
-     * 服务层仍会基于该值做显式校验，避免仅依赖容器默认 multipart 行为导致错误语义不稳定。
+     * 正式公开合同已冻结为 `audio/wav`（16k / 16bit / 单声道 PCM）且最长 60 秒，理论大小远小于 10MB；
+     * 这里继续保留 10MB 作为服务层兜底上限，确保超限时仍能返回稳定业务错误，而不是落回容器默认异常。
      */
     private long maxUploadSizeBytes = 10L * 1024 * 1024;
 
@@ -33,6 +29,17 @@ public class SpeechProperties {
         this.enabled = enabled;
     }
 
+    /**
+     * 判断当前运行时是否真的具备可对外暴露的语音转写能力。
+     * <p>
+     * `/api/ai/capabilities` 面向前端暴露的是“用户现在点开录音入口后能否真正转写成功”的最小事实，
+     * 因此这里不能只看 `speech.enabled`，还必须同时校验 provider 是否落在当前唯一支持的 Iflytek 路径，
+     * 以及一期必需的 `app-id / api-key / api-secret` 是否已经配置齐全。
+     */
+    public boolean isTranscriptionAvailable() {
+        return enabled && isIflytekProviderSelected() && hasIflytekCredentialsConfigured();
+    }
+
     public String getProvider() {
         return provider;
     }
@@ -41,12 +48,22 @@ public class SpeechProperties {
         this.provider = provider;
     }
 
-    public AzureProperties getAzure() {
-        return azure;
+    /**
+     * 判断当前 provider 选择是否应落到一期默认的讯飞实现。
+     * <p>
+     * 这里继续把空白 provider 归一化为默认值 `iflytek`，并让 capabilities 暴露、Bean 装配与运行时 provider 校验共同复用，
+     * 因而这里必须成为语音 provider 选择的唯一真相源，避免不同层各自解释空白字符串而出现语义漂移。
+     */
+    public boolean isIflytekProviderSelected() {
+        return "iflytek".equals(resolveProviderName());
     }
 
-    public void setAzure(AzureProperties azure) {
-        this.azure = azure;
+    public IflytekProperties getIflytek() {
+        return iflytek;
+    }
+
+    public void setIflytek(IflytekProperties iflytek) {
+        this.iflytek = iflytek;
     }
 
     public long getMaxUploadSizeBytes() {
@@ -58,31 +75,55 @@ public class SpeechProperties {
     }
 
     /**
-     * Azure Speech 凭据占位。
+     * 判断一期讯飞转写所需的鉴权配置是否齐全。
      * <p>
-     * 当前 provider 基线实现仍通过测试替身和 feature flag 控制行为，但文档与部署配置需要有真实可绑定的键，
-     * 避免把不存在的环境变量名写进仓库说明。
+     * 当前仓库虽然允许 `speech.enabled=false` 时缺省凭据启动，但一旦要把语音入口暴露给前端，
+     * 就必须保证三项正式鉴权参数已经具备，避免接口声称“可用”却在第一次真实调用时才暴露配置缺失。
      */
-    public static class AzureProperties {
+    public boolean hasIflytekCredentialsConfigured() {
+        return iflytek != null
+                && StringUtils.hasText(iflytek.getAppId())
+                && StringUtils.hasText(iflytek.getApiKey())
+                && StringUtils.hasText(iflytek.getApiSecret());
+    }
 
-        private String region = "";
+    String resolveProviderName() {
+        if (!StringUtils.hasText(provider)) {
+            return "iflytek";
+        }
+        return provider.trim().toLowerCase(Locale.ROOT);
+    }
 
-        private String key = "";
+    public static class IflytekProperties {
 
-        public String getRegion() {
-            return region;
+        private String appId = "";
+
+        private String apiKey = "";
+
+        private String apiSecret = "";
+
+        public String getAppId() {
+            return appId;
         }
 
-        public void setRegion(String region) {
-            this.region = region;
+        public void setAppId(String appId) {
+            this.appId = appId;
         }
 
-        public String getKey() {
-            return key;
+        public String getApiKey() {
+            return apiKey;
         }
 
-        public void setKey(String key) {
-            this.key = key;
+        public void setApiKey(String apiKey) {
+            this.apiKey = apiKey;
+        }
+
+        public String getApiSecret() {
+            return apiSecret;
+        }
+
+        public void setApiSecret(String apiSecret) {
+            this.apiSecret = apiSecret;
         }
     }
 }

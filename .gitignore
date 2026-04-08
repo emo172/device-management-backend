@@ -33,3 +33,4 @@ build/
 .vscode/
 .worktrees/
 .sisyphus/
+config/application-local.yml

@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    # 示例文件只保留字段名与环境变量名，真实值只放在本地私有配置或环境变量里。
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+
+ai:
+  qwen:
+    # 文本对话继续读取 Qwen Key，同时兼容沿用 DASHSCOPE_API_KEY。
+    api-key: ${AI_QWEN_API_KEY:${DASHSCOPE_API_KEY:}}
+
+speech:
+  # 需要联调语音时再打开。当前后端只支持讯飞 ASR-only，前端正式上传合同固定为
+  # `audio/wav`（16k / 16bit / 单声道 PCM），单次录音最长 60 秒。
+  enabled: ${SPEECH_ENABLED:false}
+  provider: iflytek
+  iflytek:
+    # 一期只需要 APPID / APIKey / APISecret。热词 `res_id` 不接入，也不要把真实值提交回仓库。
+    app-id: ${SPEECH_IFLYTEK_APP_ID:}
+    api-key: ${SPEECH_IFLYTEK_API_KEY:}
+    api-secret: ${SPEECH_IFLYTEK_API_SECRET:}

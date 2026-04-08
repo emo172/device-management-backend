@@ -24,11 +24,18 @@ spring:
           starttls:
             enable: true
 
+ai:
+  enabled: ${AI_ENABLED:true}
+  provider: ${AI_PROVIDER:qwen}
+
 speech:
-  # 开发环境默认继续关闭语音。要本地验证桌面 Chrome / Edge 语音链路时，再通过外部环境变量补齐 Azure Speech 凭据并手动打开。
+  # 开发环境默认继续关闭语音输入转写。
+  # 要本地验证当前后端内部链路时，请在本地私有配置或环境变量中同时提供
+  # `SPEECH_ENABLED=true` 与讯飞 `APPID / APIKey / APISecret`。
   enabled: ${SPEECH_ENABLED:false}
-  provider: ${SPEECH_PROVIDER:azure}
-  azure:
-    # 仅保留真实可绑定的占位键，避免 README 与部署文档引用仓库里不存在的配置名。
-    region: ${SPEECH_AZURE_REGION:}
-    key: ${SPEECH_AZURE_KEY:}
+  provider: ${SPEECH_PROVIDER:iflytek}
+  iflytek:
+    # 一期只接 `APPID / APIKey / APISecret`，不把 `res_id` 写成必配项，也不要把真实值写回仓库。
+    app-id: ${SPEECH_IFLYTEK_APP_ID:}
+    api-key: ${SPEECH_IFLYTEK_API_KEY:}
+    api-secret: ${SPEECH_IFLYTEK_API_SECRET:}

@@ -10,8 +10,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jhun.backend.config.security.JwtTokenProvider;
+import com.jhun.backend.config.speech.SpeechProperties;
 import com.jhun.backend.entity.Role;
 import com.jhun.backend.entity.User;
+import com.jhun.backend.integration.ai.support.WavTestFixtures;
 import com.jhun.backend.mapper.RoleMapper;
 import com.jhun.backend.mapper.UserMapper;
 import com.jhun.backend.service.support.speech.SpeechContract;
@@ -19,7 +21,6 @@ import com.jhun.backend.service.support.speech.SpeechProvider;
 import com.jhun.backend.service.support.speech.SpeechProviderException;
 import com.jhun.backend.service.support.speech.SpeechProviderTimeoutException;
 import com.jhun.backend.util.UuidUtil;
-import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +37,7 @@ import org.springframework.web.context.WebApplicationContext;
 /**
  * AI 语音转写校验集成测试。
  * <p>
- * 该测试锁定 task 2 的失败路径，确保不支持的音频类型、超大文件以及 provider 超时/失败
+ * 该测试锁定 task 3 的 WAV/PCM 失败路径，确保 MIME 别名、RIFF/WAVE、PCM 参数与 60 秒边界
  * 都会返回稳定业务错误，并且校验失败时不会触发真正的 provider 调用。
  */
 @SpringBootTest
@@ -59,6 +60,9 @@ class AiSpeechValidationIntegrationTest {
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
 
+    @Autowired
+    private SpeechProperties speechProperties;
+
     @MockitoBean
     private SpeechProvider speechProvider;
 
@@ -66,13 +70,14 @@ class AiSpeechValidationIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        speechProperties.setEnabled(true);
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
     }
 
     /**
-     * 验证正式合同只接受 Ogg/Opus 录音，避免把 mp4 或其他未验证容器误放进 v1 合同。
+     * 验证正式合同只接受 WAV 容器，避免把 mp4 或其他未验证容器误放进 v1 合同。
      */
     @Test
     void shouldRejectUnsupportedContentType() throws Exception {
@@ -83,7 +88,7 @@ class AiSpeechValidationIntegrationTest {
                                 "file",
                                 "voice.mp4",
                                 "audio/mp4",
-                                "fake-mp4-audio".getBytes(StandardCharsets.UTF_8)))
+                                WavTestFixtures.validMono16Bit16KhzWav(1600)))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
@@ -91,45 +96,35 @@ class AiSpeechValidationIntegrationTest {
         verify(speechProvider, never()).transcribe(any());
     }
 
-    /**
-     * 验证 codecs 参数里若不包含 Opus，会在服务层被直接拒绝。
-     * <p>
-     * 这样可以避免前端传来 `audio/ogg` 但实际编码不是 Azure 当前正式支持路径时，
-     * 还继续把不兼容字节流送进 SDK 才在更深层失败。
-     */
     @Test
-    void shouldRejectOggWithoutOpusCodec() throws Exception {
-        User user = createUser("speech-codec-user", "speech-invalid-codec-user@example.com", "USER");
+    void shouldRejectEmptyAudioFile() throws Exception {
+        User user = createUser("speech-empty-user", "speech-empty-user@example.com", "USER");
 
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.ogg",
-                                "audio/ogg;codecs=pcm",
-                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8)))
+                                "voice.wav",
+                                "audio/wav",
+                                new byte[0]))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
+                .andExpect(jsonPath("$.message").value(SpeechContract.EMPTY_AUDIO_MESSAGE));
 
         verify(speechProvider, never()).transcribe(any());
     }
 
-    /**
-     * 验证 `audio/*` 这类通配 MIME 不会被当成 `audio/ogg` 合法变体放行。
-     * <p>
-     * 这样可以避免客户端只给出模糊音频大类时，服务层误把请求继续送进 provider，
-     * 最终把“合同不匹配”伪装成第三方语音失败。
-     */
     @Test
-    void shouldRejectWildcardAudioContentType() throws Exception {
-        User user = createUser("speech-wildcard-user", "speech-wildcard-user@example.com", "USER");
+    void shouldRejectInvalidRiffWaveHeader() throws Exception {
+        User user = createUser("speech-invalid-riff", "speech-invalid-riff-user@example.com", "USER");
+        byte[] brokenHeader = WavTestFixtures.replaceAscii(
+                WavTestFixtures.validMono16Bit16KhzWav(1600), 0, "RIFX");
 
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.bin",
-                                "audio/*",
-                                "fake-ambiguous-audio".getBytes(StandardCharsets.UTF_8)))
+                                "voice.wav",
+                                "audio/wav",
+                                brokenHeader))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
@@ -137,9 +132,57 @@ class AiSpeechValidationIntegrationTest {
         verify(speechProvider, never()).transcribe(any());
     }
 
-    /**
-     * 验证超过 10MB 的录音会被显式拒绝，避免超大上传继续进入 provider 调用链。
-     */
+    @Test
+    void shouldRejectUnsupportedSampleRate() throws Exception {
+        User user = createUser("speech-rate-user", "speech-invalid-rate-user@example.com", "USER");
+
+        mockMvc.perform(multipart("/api/ai/speech/transcriptions")
+                        .file(new MockMultipartFile(
+                                "file",
+                                "voice.wav",
+                                "audio/wav",
+                                WavTestFixtures.wav(8000, 1, 16, 1, 800)))
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
+
+        verify(speechProvider, never()).transcribe(any());
+    }
+
+    @Test
+    void shouldRejectUnsupportedChannelCount() throws Exception {
+        User user = createUser("speech-channel-user", "speech-invalid-channel-user@example.com", "USER");
+
+        mockMvc.perform(multipart("/api/ai/speech/transcriptions")
+                        .file(new MockMultipartFile(
+                                "file",
+                                "voice.wav",
+                                "audio/wav",
+                                WavTestFixtures.wav(16000, 2, 16, 1, 800)))
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
+
+        verify(speechProvider, never()).transcribe(any());
+    }
+
+    @Test
+    void shouldRejectNonPcmWavEncoding() throws Exception {
+        User user = createUser("speech-non-pcm-user", "speech-non-pcm-user@example.com", "USER");
+
+        mockMvc.perform(multipart("/api/ai/speech/transcriptions")
+                        .file(new MockMultipartFile(
+                                "file",
+                                "voice.wav",
+                                "audio/wav",
+                                WavTestFixtures.wav(16000, 1, 16, 3, 800)))
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(SpeechContract.UNSUPPORTED_CONTENT_TYPE_MESSAGE));
+
+        verify(speechProvider, never()).transcribe(any());
+    }
+
     @Test
     void shouldRejectOversizedAudioFile() throws Exception {
         User user = createUser("speech-large-user", "speech-large-file-user@example.com", "USER");
@@ -147,8 +190,8 @@ class AiSpeechValidationIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.ogg",
-                                "audio/ogg",
+                                "voice.wav",
+                                "audio/wav",
                                 new byte[(int) SpeechContract.MAX_UPLOAD_SIZE_BYTES + 1]))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
@@ -157,9 +200,25 @@ class AiSpeechValidationIntegrationTest {
         verify(speechProvider, never()).transcribe(any());
     }
 
-    /**
-     * 验证 provider 超时会被翻译成稳定的可重试业务错误，而不是直接暴露底层异常。
-     */
+    @Test
+    void shouldRejectAudioLongerThanSixtySeconds() throws Exception {
+        User user = createUser("speech-long-user", "speech-long-user@example.com", "USER");
+
+        mockMvc.perform(multipart("/api/ai/speech/transcriptions")
+                        .file(new MockMultipartFile(
+                                "file",
+                                "voice.wav",
+                                "audio/wav",
+                                WavTestFixtures.validMono16Bit16KhzWav(
+                                        SpeechContract.INPUT_SAMPLE_RATE_HZ
+                                                * (SpeechContract.MAX_RECORDING_DURATION_SECONDS + 1))))
+                        .header("Authorization", bearer(user, "USER")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(SpeechContract.RECORDING_TOO_LONG_MESSAGE));
+
+        verify(speechProvider, never()).transcribe(any());
+    }
+
     @Test
     void shouldReturnControlledErrorWhenProviderTimesOut() throws Exception {
         User user = createUser("speech-time-user", "speech-timeout-user@example.com", "USER");
@@ -168,17 +227,14 @@ class AiSpeechValidationIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.ogg",
-                                "audio/ogg",
-                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8)))
+                                "voice.wav",
+                                "audio/wave",
+                                WavTestFixtures.validMono16Bit16KhzWav(1600)))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(SpeechContract.TRANSCRIPTION_TIMEOUT_MESSAGE));
     }
 
-    /**
-     * 验证 provider 其他失败会被统一收口成安全文案，避免把供应商实现细节透出给前端。
-     */
     @Test
     void shouldReturnControlledErrorWhenProviderFails() throws Exception {
         User user = createUser("speech-fail-user", "speech-provider-fail-user@example.com", "USER");
@@ -187,9 +243,9 @@ class AiSpeechValidationIntegrationTest {
         mockMvc.perform(multipart("/api/ai/speech/transcriptions")
                         .file(new MockMultipartFile(
                                 "file",
-                                "voice.ogg",
-                                "audio/ogg",
-                                "fake-ogg-audio".getBytes(StandardCharsets.UTF_8)))
+                                "voice.wav",
+                                "audio/x-wav",
+                                WavTestFixtures.validMono16Bit16KhzWav(1600)))
                         .header("Authorization", bearer(user, "USER")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(SpeechContract.TRANSCRIPTION_FAILED_MESSAGE));

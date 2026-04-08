@@ -66,14 +66,26 @@ cd <当前后端仓库目录>
 
 其中该入口默认只允许本机回环地址访问，且不会默认回传管理员明文密码。
 
+### 3. 在 IDEA 中直接启动 Qwen 文本 AI，按需启用讯飞语音
+
+- 仓库已提供共享运行配置：`.run/DeviceManagementBackend Dev Qwen.run.xml`
+- 第一次导入项目后，在 IDEA 运行配置列表中选择 `DeviceManagementBackend Dev Qwen`
+- 该运行配置会固定使用 `dev,local` profile；同时 `application-dev.yml` 已把文本 AI 默认切到 `enabled=true` 与 `provider=qwen`
+- 本地私有覆盖统一放在 `config/application-local.yml`，该文件已被 `.gitignore` 忽略；新开发者可先复制 `config/application-local.example.yml`，再通过该私有文件或环境变量补齐自己的 MySQL、Qwen 与讯飞配置
+- Qwen 密钥默认优先读取 `AI_QWEN_API_KEY`，同时兼容 `DASHSCOPE_API_KEY`
+- 因此只要本地 MySQL、Redis 与 DashScope 访问链路可用，前端登录 `USER` 账号后进入 `/ai` 页面即可直接发起文本对话，不会再退回“仅支持查看历史会话”
+- 若你临时需要回退为 mock 或关闭 AI，可在 IDEA 运行配置中覆盖环境变量：`AI_PROVIDER=mock` 或 `AI_ENABLED=false`
+
 ## AI 语音 v1 配置与发布前提
 
-- `speech.enabled` 是语音总开关，默认应保持关闭；只有完成部署配置、桌面版 Chrome / Edge 验收和第三方云语音合规审批后才考虑打开
-- v1 语音 provider 仅 Azure Speech，当前部署最少需要准备 `SPEECH_AZURE_REGION` 与 `SPEECH_AZURE_KEY`
+- `speech.enabled` / `/api/ai/capabilities` 中的 `speechEnabled` 只表示“语音输入转写可用”，默认应保持关闭；关闭时前端继续保留文字对话与历史查看
+- 正式上传合同固定为 `audio/wav`（16k / 16bit / 单声道 PCM），单次录音时长上限固定为 60 秒；前后端后续实现都必须以此为准
+- 后端语音实现已固定为讯飞 ASR-only；如需打开语音联调，只需要在后端注入 `SPEECH_IFLYTEK_APP_ID`、`SPEECH_IFLYTEK_API_KEY`、`SPEECH_IFLYTEK_API_SECRET`
+- `/api/ai/speech/transcriptions` 只返回最终 transcript；前端收到结果后只回填输入框，仍需用户手动发送，不会自动触发聊天请求
+- 一期只接入讯飞 `APPID / APIKey / APISecret`，不把热词 `res_id` 写成必配项，也不向前端暴露第三方凭据
 - 发布阻塞浏览器矩阵仅覆盖桌面版 Chrome / Edge，Safari 与移动端暂不作为已正式支持范围
-- 浏览器录音正式上传口径固定为 `audio/ogg;codecs=opus`；前端应先用 `MediaRecorder.isTypeSupported(...)` 探测，若当前浏览器拿不到该格式就回退到文字对话
 - 录音转写会经过第三方云语音服务处理，但原始录音不做持久化存储
-- 历史播放会按需基于 `chat_history.aiResponse` 生成，不预存整段历史音频
+- 后端不再提供历史播报或其他语音输出接口，聊天消息和历史页都只保留文本内容
 - 语音入口关闭或浏览器不支持时，前端应继续保留文字对话与历史查看，不把回退路径当成异常
 
 ## smoke 联调说明

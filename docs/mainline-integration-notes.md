@@ -63,11 +63,14 @@ npm run dev
 ## AI 语音 v1 联调前提
 
 - 后端 `speech.enabled` 是语音总开关，保持 `false` 时前端必须优雅回退到文字对话与历史查看
-- v1 语音 provider 仅 Azure Speech，联调前至少准备 `SPEECH_AZURE_REGION` 与 `SPEECH_AZURE_KEY`
+- 建议先复制 `config/application-local.example.yml` 到本地私有 `config/application-local.yml`，或等价地通过环境变量准备讯飞 `APPID / APIKey / APISecret`
+- 后端语音实现已固定为讯飞 ASR-only，联调前至少准备 `SPEECH_IFLYTEK_APP_ID`、`SPEECH_IFLYTEK_API_KEY`、`SPEECH_IFLYTEK_API_SECRET`
 - 当前发布阻塞浏览器矩阵仅覆盖桌面版 Chrome / Edge，不把 Safari 或移动端写成已正式支持
-- 浏览器录音正式上传口径固定为 `audio/ogg;codecs=opus`；前端应先用 `MediaRecorder.isTypeSupported(...)` 选择该格式，拿不到时直接回退文字链路
+- 浏览器录音正式上传口径固定为 `audio/wav`（16k / 16bit / 单声道 PCM）；拿不到该合同能力时前端必须直接回退文字链路
+- 单次录音时长上限固定为 60 秒；一期只做输入转写，不接入热词 `res_id`
+- `/api/ai/speech/transcriptions` 只返回最终 transcript，前端收到后只回填输入框，仍需用户手动发送
 - 录音转写会经过第三方云语音服务处理，但原始录音不做持久化存储
-- 历史播放会按需基于 `chat_history.aiResponse` 生成，不预存整段历史音频
+- 后端不再提供历史播放或其他语音输出链路，聊天历史只保留文本内容
 - 第三方云语音的合规 / 隐私审批是上线前置条件，当前文档同步不代表审批已经完成
 
 ## 关键联调契约

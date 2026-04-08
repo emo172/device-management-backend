@@ -8,7 +8,7 @@ package com.jhun.backend.dto.speech;
  *
  * @param transcript 转写文本
  * @param locale 固定语音 locale，当前只允许 `zh-CN`
- * @param provider 实际处理语音的后端 provider 标识
+ * @param provider 对外稳定暴露的 provider 标识；当前 `/api/ai/speech/transcriptions` 固定返回 `iflytek`
  */
 public record AiSpeechTranscriptionResponse(String transcript, String locale, String provider) {
 }
